@@ -4,7 +4,7 @@ Eseguite il 17 ottobre 2026. Nessuna stampa fisica, movimento o flash effettuato
 
 | Prova | Risultato |
 |---|---|
-| C++ `IndxChecks`, ordine casuale | 129 asserzioni, 5 casi superati |
+| C++ `IndxChecks`, ordine casuale | 195 asserzioni, 6 casi superati |
 | C++ `GCodeWriter`, `CombinedInfill`, `UsedLayerTools`, ordine casuale | 467 asserzioni, 38 casi superati |
 | Protocollo, catalogo, libreria, condizioni delle calibrazioni | Superati su Windows/Python 3.12 e SPI-XI/Python 3.9.2 |
 | Conteggi 1/2/4/8/12/64 | Dichiarazione, archivio, richiamo e rimozione/ripristino verificati; mappatura/limite Z verificati in C++ |
@@ -27,3 +27,13 @@ Le immagini seguenti usano dati esplicitamente denominati TEST SIMULATO, in una 
 La suite FFF emette anche diagnostica su opzioni/risorse opzionali dei fixture; tutte le asserzioni richieste sono superate. Il controllo clang-tidy previsto dal progetto e stato avviato ma il suo wrapper richiede un'installazione Visual Studio registrata, assente nell'ambiente con toolchain MSVC portabile: non si dichiara quel controllo superato.
 
 Il workflow GitHub verifica il pacchetto Python e gli hash. Non compila Orca e non sostituisce le prove GTK o il collaudo della conversione. La prova multidiametro 0,20/0,80 precedente resta disponibile in [PROVA_MULTIDIAMETRO.md](PROVA_MULTIDIAMETRO.md).
+
+## Importazione automatica degli ugelli
+
+Il protocollo C++ verifica la dichiarazione completa per 1/2/4/6/8/64 tool, default del fattore CHT, risposte offline e non confermate e rifiuto di numero/indici/diametri/tipi non validi. Numero, diametri e Standard/CHT del touchscreen sono la sorgente del montaggio in Orca.
+
+Prova GUI isolata: una dichiarazione simulata di sei tool e stata importata dal ciclo automatico, senza usare l'editor Ugelli. Il profilo salvato contiene i sei diametri attesi e il riepilogo mostra T4 da 0,40 mm CHT. La copia precedente del profilo stampante e presente nella cartella di backup. Nessun dato della stampante reale modificato per la prova.
+
+![Sei tool importati automaticamente, incluso T4 CHT](sync-ugelli-automatica.png)
+
+Verificata anche la riduzione automatica da sei a due tool e il cambio T0 da 0,20 a 0,30 mm, senza reinserimento nell'editor Orca. Le assegnazioni a tool rimossi richiedono verifica e riassegnazione prima di usare progetti precedenti.

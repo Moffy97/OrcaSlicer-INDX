@@ -20,7 +20,7 @@ L'installatore supporta `--rollback PERCORSO_BACKUP` insieme alle directory Klip
 - Libreria separata dei propri filamenti, con UUID stabile, nomi modificabili, marca, materiale e colore.
 - Temperature ugello/piano, PA, flow ratio e massimo flusso volumetrico richiamabili senza reinserire i valori.
 - Archivio calibrazioni per **filamento + tool + diametro + Standard/CHT**. Tornando alla stessa combinazione, i risultati vengono recuperati.
-- Pulsante **Ugelli**: numero di tool da 1 a 64 (limite software Orca), diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
+- Montaggio configurato una sola volta su KlipperScreen e importato automaticamente in Orca. Il pulsante **Ugelli** mostra la dichiarazione ricevuta; editor locale come fallback offline. Numero di tool da 1 a 64 (limite software Orca), diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
 - Stima CHT modificabile per i profili generici: fattore iniziale 1,30. Il massimo flusso misurato prevale sempre sulla stima. Il diametro non viene usato come un moltiplicatore quadratico della capacita di fusione.
 - Pulsante **INDX**: catalogo Orca standard/personale, importazione persistente dei profili e assegnazione ai tool del progetto. Salvataggio della libreria in background con Orca aperto.
 - Test visivi PA, flow e massimo flusso dal touchscreen. La cella di carico non misura questi risultati.
@@ -73,7 +73,7 @@ I test fisici richiedono le macro gia collaudate `_INDX_SETUP`, `_INDX_REQUIRE_C
 ## Uso
 
 1. Aprire la build INDX con un profilo stampante INDX con il numero di tool previsto e con impostazioni personali salvate.
-2. In **Ugelli**, dichiarare quelli realmente montati. Standard/CHT e una scelta indipendente dal materiale dell'ugello e dalla variante di estrusore interna di Orca.
+2. Su KlipperScreen, in **I miei filamenti > Conferma ugelli montati sulla stampante**, dichiarare quelli realmente montati. Orca importa numero, diametri e tipi automaticamente; **Ugelli** mostra i dati ricevuti. Standard/CHT e una scelta indipendente dal materiale dell'ugello e dalla variante di estrusore interna di Orca.
 3. Nel pulsante **INDX**, configurare Moonraker con clic destro. Usare un indirizzo della propria stampante: il repository non contiene credenziali o indirizzi personali.
 4. Sul touchscreen sincronizzare il catalogo, creare il filamento da una base appropriata, impostare colore/temperature e salvarlo con un nome riconoscibile.
 5. A macchina collaudata, stampare e valutare i test. Salvare i risultati nel profilo. Per il massimo flusso si conserva il 90% dell'ultima fascia scelta senza difetti.

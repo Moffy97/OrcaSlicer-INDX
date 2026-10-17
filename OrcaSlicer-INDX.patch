@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..2967b19c
+index 00000000..e4b91473
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,30 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -48,6 +48,8 @@ index 00000000..2967b19c
 +
 +
 +The touchscreen hardware declaration uses schema 2, an explicit confirmation timestamp and an ordered tool list. It is never replaced by a received Orca catalogue. Printer preflight compares that declaration with TOOL_POSITIONS.tool_count, current Klipper readiness, commissioning flags and the UUID assigned to every used filament/tool pair. A project-side snapshot is evaluated during configuration apply; explicit inspection and sending fetch fresh state. Offline slicing/export remain available. INDX network sending is restricted to the current plate through the legacy Moonraker print-host path; the print-host URL must match the checked Moonraker URL. Other upload paths are not used for INDX. This is an operator declaration check, not physical tool detection.
++
++The confirmed touchscreen declaration owns tool count, nozzle diameters, Standard/CHT and the generic CHT factor. Orca imports it on its background polling cycle and before explicit filament synchronization. It validates the entire declaration before applying it through the same preset path as local nozzle editing, backs up the previous printer profile and recalculates the used-nozzle layer limits. Background changes wait while profiles have unsaved edits, slicing/export is active or a modal dialog is open. Results from a different connection or printer preset are discarded. Offline and unconfirmed responses do not resize a profile. The Ugelli button displays the printer-owned declaration when available; local editing remains a fallback when no confirmed declaration is reachable. Firmware dock positions and commissioning are independent of this synchronization.
 +
 +Calibration status is derived from per-nozzle records: verified requires a saved visual/manual test with matching temperature, bed, material, brand/product and effective flow where relevant. Estimated generic values and missing PA are distinct from stale measurements. Legacy numbers without complete provenance are retained but not applied as verified calibration. A PA or maximum-flow result becomes stale if its effective flow changes. Rename and colour edits preserve calibration identity. The GUI save paths require the matching generated test to have completed before storing a verified result.
 +
@@ -131,10 +133,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..628d8803
+index 00000000..1921cb1a
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,134 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -145,6 +147,29 @@ index 00000000..628d8803
 +
 +namespace Slic3r { namespace Indx {
 +using Json = nlohmann::json;
++// Accept only a complete, explicitly confirmed touchscreen declaration.
++// An offline or incomplete response must never shrink a saved printer profile.
++inline Json confirmed_tools(const Json& remote) {
++    if(!remote.value("online",false))return Json::array();
++    const auto hardware=remote.value("hardware",Json::object());
++    const double confirmed=hardware.value("confirmed_at",0.);
++    if(hardware.value("schema",0)!=2 || !std::isfinite(confirmed) || confirmed<=0)return Json::array();
++    const auto tools=hardware.value("tools",Json::array());
++    if(!tools.is_array() || tools.empty() || tools.size()>64)throw std::invalid_argument("invalid_tool_count");
++    Json normalized=Json::array();
++    for(size_t t=0;t<tools.size();++t) {
++        const auto& n=tools.at(t);
++        if(!n.is_object() || !n.contains("tool") || !n.at("tool").is_number_integer() || n.at("tool").get<int>()!=int(t) ||
++            !n.contains("diameter") || !n.at("diameter").is_number())throw std::invalid_argument("invalid_tool");
++        const double diameter=n.at("diameter").get<double>();
++        const auto type=n.value("type",std::string());
++        const double factor=n.value("cht_multiplier",1.3);
++        if(!std::isfinite(diameter) || diameter<.1 || diameter>2. || (type!="standard" && type!="cht") ||
++            !std::isfinite(factor) || factor<1. || factor>3.)throw std::invalid_argument("invalid_nozzle");
++        normalized.push_back({{"tool",t},{"diameter",diameter},{"type",type},{"cht_multiplier",factor}});
++    }
++    return normalized;
++}
 +template<typename T> inline size_t combined_layers(const std::vector<T>& zs,size_t layer,double height) {
 +    if(layer>=zs.size() || !std::isfinite(height) || height<=0)return 0;
 +    for(size_t n=1;n<=layer+1;++n) {
@@ -390,10 +415,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..8a1322cd
+index 00000000..e5533bea
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,787 @@
+@@ -0,0 +1,829 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -421,6 +446,7 @@ index 00000000..8a1322cd
 +#include <wx/timer.h>
 +#include <wx/utils.h>
 +#include <wx/window.h>
++#include <wx/toplevel.h>
 +#include <wx/string.h>
 +#include <wx/spinctrl.h>
 +#include <wx/choice.h>
@@ -454,6 +480,7 @@ index 00000000..8a1322cd
 +namespace {
 +using Json = nlohmann::json;
 +constexpr const char* catalog_file = "indx-orca-catalog.json.z";
++bool foreground_sync = false;
 +size_t tool_count() {
 +    const auto* sizes=wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
 +    return sizes?sizes->values.size():0;
@@ -818,22 +845,99 @@ index 00000000..8a1322cd
 +    return Indx::preflight({{"slots",slots},{"tool_count",tool_count()}},remote);
 +}
 +
++bool apply_nozzle_setup(const Json& next) {
++    const auto previous=nozzle_setup();
++    const size_t count=next.size();
++    std::set<int> changed;
++        auto& bundle=*wxGetApp().preset_bundle;Preset printer=bundle.printers.get_edited_preset();
++        printer.set_num_extruders(unsigned(count));
++        auto* sizes=printer.config.option<ConfigOptionFloats>("nozzle_diameter");
++        for(int t=0;t<int(count);++t){
++            const auto& n=next.at(t);
++            if(size_t(t)>=previous.size() || n!=previous[t])changed.insert(t);sizes->values[t]=n.at("diameter").get<double>();
++            if(auto* max=printer.config.option<ConfigOptionFloats>("max_layer_height")){if(max->values.size()>size_t(t))max->values[t]=sizes->values[t]*.7;}
++            if(auto* min=printer.config.option<ConfigOptionFloats>("min_layer_height")){if(min->values.size()>size_t(t))min->values[t]=sizes->values[t]*.1;}
++        }
++        if(changed.empty() && count==previous.size())return false;
++        wxGetApp().plater()->take_snapshot("Ugelli INDX");
++        const std::string printer_name=printer.can_overwrite()?printer.name:printer.name+" - Ugelli personali";
++        const auto folder=boost::filesystem::path(data_dir())/"indx-profile-backups";
++        boost::filesystem::create_directories(folder);
++        const auto stamp=std::chrono::system_clock::now().time_since_epoch().count();
++        boost::nowide::ofstream backup((folder/(std::to_string(stamp)+"-printer.json")).string());
++        bundle.printers.get_edited_preset().config.save_to_json(backup,printer.name,"User","2.5.0");
++        if(!backup)throw std::runtime_error(_u8L("Backup stampante fallito: sincronizzazione ugelli interrotta."));
++        backup.close();
++        bundle.printers.save_current_preset(printer_name,false,false,&printer);
++        wxGetApp().app_config->set("indx_nozzle_setup",next.dump());
++        const auto setups_raw=wxGetApp().app_config->get("indx_nozzle_setups");
++        auto setups=setups_raw.empty()?Json::object():Json::parse(setups_raw);
++        setups[printer_name]=next;wxGetApp().app_config->set("indx_nozzle_setups",setups.dump());
++        bundle.set_num_filaments(std::max(count,bundle.filament_presets.size()));
++        // The background apply resolves current plate assignments before adapting Z.
++        auto raw=wxGetApp().app_config->get("indx_generated_sources");Json mapping=raw.empty()?Json::object():Json::parse(raw);
++        Json assignments=Json::object();
++        for(int t=0;t<int(tool_count());++t){const auto* active=bundle.filaments.find_preset(bundle.filament_presets[t],false);
++            if(active && active->filament_id.rfind("INDX:",0)==0 && active->filament_id.size()>37 && active->filament_id[37]==':')assignments[std::to_string(t)]={{"library_id",active->filament_id.substr(5,32)}};
++        }
++        raw=wxGetApp().app_config->get("indx_library_cache");Json library=raw.empty()?Json::object():Json::parse(raw);
++        auto entries=library_entries(library,assignments);
++        for(int t:changed){
++            if(assignments.contains(std::to_string(t)))continue;
++            const auto active_name=bundle.filament_presets[t];const auto source_name=mapping.value(active_name,active_name);
++            const Preset* source=bundle.filaments.find_preset(source_name,false);
++            if(!source)continue;
++            const bool generic=source_name.rfind("Generic ",0)==0 || source_name.find("Base da calibrare")!=std::string::npos;
++            auto config=source->config;const auto* speed=config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
++            const double base=speed && !speed->values.empty() && speed->values[0]>0?speed->values[0]:8.;
++            const double estimate=generic?base*(next[t].at("type")=="cht"?next[t].at("cht_multiplier").get<double>():1.):std::min(base,8.);
++            config.set_key_value("filament_max_volumetric_speed",new ConfigOptionFloats({std::min(100.,estimate)}));
++            config.set_deserialize_strict("enable_pressure_advance","0");
++            if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
++            config.set_key_value("compatible_printers",new ConfigOptionStrings({printer_name}));config.set_deserialize_strict("compatible_printers_condition","");
++            std::string label=wxString::FromUTF8(source_name).Left(32).ToUTF8().data();for(char& c:label)if(std::string("<>:\"/\\|?*").find(c)!=std::string::npos)c='_';
++            const auto hw=nozzle_key(t,next[t]);
++            const auto name="INDX T"+std::to_string(t)+" - "+label+" "+std::to_string(int(std::round(sizes->values[t]*1000)))+" "+next[t].at("type").get<std::string>()+" stimato";
++            entries.push_back({t,name,"INDX:generic:"+digest(source_name+hw),"#FFFFFF",std::move(config),"",true,source_name});
++        }
++        persist_library(entries);
++        for(const auto& entry:entries)if(entry.assigned && changed.count(entry.tool))bundle.filament_presets[entry.tool]=entry.name;
++        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->select_preset(bundle.filament_presets[0]);
++        wxGetApp().load_current_presets(false,false);wxGetApp().plater()->on_filament_count_change(bundle.filament_presets.size());
++        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();bundle.export_selections(*wxGetApp().app_config);
++        wxGetApp().app_config->save();
++    return true;
++}
++bool import_printer_tools(const Json& remote) {
++    const auto tools=Indx::confirmed_tools(remote);
++    return !tools.empty() && apply_nozzle_setup(tools);
++}
++
 +struct Publisher {
 +    wxTimer timer;
 +    std::future<NetworkResult> pending;
-+    std::string last_hash,pending_hash,last_library_hash;
++    std::string last_hash,pending_hash,last_library_hash,pending_printer,pending_url;
 +    std::chrono::steady_clock::time_point next;
 +    explicit Publisher(wxWindow* owner,int id):timer(owner,id){}
 +    void tick() {
++        if(foreground_sync)return;
++        // Do not change an edited profile, an active slice, or a modal workflow.
++        auto& bundle=*wxGetApp().preset_bundle;
++        if(wxGetApp().plater()->is_background_process_slicing() || wxGetApp().plater()->is_export_gcode_scheduled() ||
++            bundle.printers.get_edited_preset().is_dirty || bundle.filaments.get_edited_preset().is_dirty ||
++            bundle.prints.get_edited_preset().is_dirty)return;
++        for(auto* window:wxTopLevelWindows)if(auto* dialog=dynamic_cast<wxDialog*>(window))if(dialog->IsModal())return;
 +        if (pending.valid()) {
 +            if (pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
 +            auto result=pending.get();
++            if(pending_printer!=bundle.printers.get_edited_preset().name || pending_url!=host_url())return;
 +            if(result.error.empty()) {
++                if(is_indx_printer())import_printer_tools(result.remote);
 +                last_hash=result.fingerprint;
 +                if(!result.remote.empty())wxGetApp().app_config->set("indx_printer_snapshot",result.remote.dump());
 +                if(!result.library.empty())wxGetApp().app_config->set("indx_library_cache",result.library.dump());
 +                if(is_indx_printer() && !result.library.empty() && !wxGetApp().preset_bundle->filaments.get_edited_preset().is_dirty){
-+                    const auto signature=digest(result.library.dump());
++                    const auto signature=digest(result.library.dump()+nozzle_setup().dump());
 +                    if(signature!=last_library_hash){
 +                        auto entries=library_entries(result.library,Json::object());persist_library(entries);
 +                        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();last_library_hash=signature;
@@ -846,7 +950,7 @@ index 00000000..8a1322cd
 +        next=std::chrono::steady_clock::now()+std::chrono::seconds(15);
 +        auto data=catalog_snapshot();auto fingerprint=data;fingerprint.erase("generated_at");
 +        pending_hash=digest(fingerprint.dump());
-+        auto url=host_url();auto previous=last_hash;
++        auto url=host_url();auto previous=last_hash;pending_url=url;pending_printer=bundle.printers.get_edited_preset().name;
 +        pending=std::async(std::launch::async,[url,previous,data=std::move(data)](){return transfer(url,data,false,previous);});
 +    }
 +};
@@ -978,6 +1082,14 @@ index 00000000..8a1322cd
 +    try {
 +        if(!is_indx_printer())throw std::runtime_error(_u8L("Seleziona una stampante INDX con un numero di tool supportato."));
 +        if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
++        const auto remote=read_printer(host_url());
++        const auto declared=Indx::confirmed_tools(remote);
++        if(!declared.empty()) {
++            apply_nozzle_setup(declared);
++            wxString summary=_L("Numero, diametri e tipo ugello vengono importati automaticamente da KlipperScreen. Per modificarli usa I miei filamenti > Conferma ugelli montati sulla stampante.\n\n");
++            for(const auto& n:declared)summary+=wxString::Format("T%d: %.2f mm %s\n",n.at("tool").get<int>(),n.at("diameter").get<double>(),n.at("type")=="cht"?"CHT":"Standard");
++            wxMessageBox(summary,_L("Ugelli dalla stampante"),wxOK|wxICON_INFORMATION,parent);return;
++        }
 +        const auto previous=nozzle_setup();
 +        const long requested=wxGetNumberFromUser(_L("Numero di tool INDX configurati. Non modifica dock o firmware. Riducendo il numero, riassegna eventuali funzioni che usano tool rimossi."),_L("Tool"),_L("Ugelli INDX"),long(tool_count()),1,long(MAXIMUM_EXTRUDER_NUMBER),parent);
 +        if(requested<1)return;
@@ -1003,57 +1115,10 @@ index 00000000..8a1322cd
 +        note->Wrap(720);layout->Add(note,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
 +        layout->Add(dialog.CreateSeparatedButtonSizer(wxOK|wxCANCEL),0,wxEXPAND|wxALL,12);dialog.SetSizerAndFit(layout);
 +        if(dialog.ShowModal()!=wxID_OK)return;
-+        Json next=Json::array();std::set<int> changed;
-+        auto& bundle=*wxGetApp().preset_bundle;Preset printer=bundle.printers.get_edited_preset();
-+        printer.set_num_extruders(unsigned(count));
-+        auto* sizes=printer.config.option<ConfigOptionFloats>("nozzle_diameter");
-+        for(int t=0;t<int(count);++t){
-+            Json n={{"tool",t},{"diameter",diameters[t]->GetValue()},{"type",types[t]->GetSelection()==1?"cht":"standard"},{"cht_multiplier",factors[t]->GetValue()}};
-+            if(size_t(t)>=previous.size() || n!=previous[t])changed.insert(t);next.push_back(n);sizes->values[t]=diameters[t]->GetValue();
-+            if(auto* max=printer.config.option<ConfigOptionFloats>("max_layer_height")){if(max->values.size()>size_t(t))max->values[t]=diameters[t]->GetValue()*.7;}
-+            if(auto* min=printer.config.option<ConfigOptionFloats>("min_layer_height")){if(min->values.size()>size_t(t))min->values[t]=diameters[t]->GetValue()*.1;}
-+        }
-+        if(changed.empty() && count==previous.size())return;
-+        wxGetApp().plater()->take_snapshot("Ugelli INDX");
-+        const std::string printer_name=printer.can_overwrite()?printer.name:printer.name+" - Ugelli personali";
-+        bundle.printers.save_current_preset(printer_name,false,false,&printer);
-+        wxGetApp().app_config->set("indx_nozzle_setup",next.dump());
-+        const auto setups_raw=wxGetApp().app_config->get("indx_nozzle_setups");
-+        auto setups=setups_raw.empty()?Json::object():Json::parse(setups_raw);
-+        setups[printer_name]=next;wxGetApp().app_config->set("indx_nozzle_setups",setups.dump());
-+        bundle.set_num_filaments(std::max(count,bundle.filament_presets.size()));
-+        // The background apply resolves current plate assignments before adapting Z.
-+        auto raw=wxGetApp().app_config->get("indx_generated_sources");Json mapping=raw.empty()?Json::object():Json::parse(raw);
-+        Json assignments=Json::object();
-+        for(int t=0;t<int(tool_count());++t){const auto* active=bundle.filaments.find_preset(bundle.filament_presets[t],false);
-+            if(active && active->filament_id.rfind("INDX:",0)==0 && active->filament_id.size()>37 && active->filament_id[37]==':')assignments[std::to_string(t)]={{"library_id",active->filament_id.substr(5,32)}};
-+        }
-+        raw=wxGetApp().app_config->get("indx_library_cache");Json library=raw.empty()?Json::object():Json::parse(raw);
-+        auto entries=library_entries(library,assignments);
-+        for(int t:changed){
-+            if(assignments.contains(std::to_string(t)))continue;
-+            const auto active_name=bundle.filament_presets[t];const auto source_name=mapping.value(active_name,active_name);
-+            const Preset* source=bundle.filaments.find_preset(source_name,false);
-+            if(!source)continue;
-+            const bool generic=source_name.rfind("Generic ",0)==0 || source_name.find("Base da calibrare")!=std::string::npos;
-+            auto config=source->config;const auto* speed=config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
-+            const double base=speed && !speed->values.empty() && speed->values[0]>0?speed->values[0]:8.;
-+            const double estimate=generic?base*(next[t].at("type")=="cht"?next[t].at("cht_multiplier").get<double>():1.):std::min(base,8.);
-+            config.set_key_value("filament_max_volumetric_speed",new ConfigOptionFloats({std::min(100.,estimate)}));
-+            config.set_deserialize_strict("enable_pressure_advance","0");
-+            if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
-+            config.set_key_value("compatible_printers",new ConfigOptionStrings({printer_name}));config.set_deserialize_strict("compatible_printers_condition","");
-+            std::string label=wxString::FromUTF8(source_name).Left(32).ToUTF8().data();for(char& c:label)if(std::string("<>:\"/\\|?*").find(c)!=std::string::npos)c='_';
-+            const auto hw=nozzle_key(t,next[t]);
-+            const auto name="INDX T"+std::to_string(t)+" - "+label+" "+std::to_string(int(std::round(sizes->values[t]*1000)))+" "+next[t].at("type").get<std::string>()+" stimato";
-+            entries.push_back({t,name,"INDX:generic:"+digest(source_name+hw),"#FFFFFF",std::move(config),"",true,source_name});
-+        }
-+        persist_library(entries);
-+        for(const auto& entry:entries)if(entry.assigned && changed.count(entry.tool))bundle.filament_presets[entry.tool]=entry.name;
-+        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->select_preset(bundle.filament_presets[0]);
-+        wxGetApp().load_current_presets(false,false);wxGetApp().plater()->on_filament_count_change(bundle.filament_presets.size());
-+        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();bundle.export_selections(*wxGetApp().app_config);
-+        wxGetApp().app_config->save();
++        Json next=Json::array();
++        for(size_t t=0;t<count;++t)next.push_back({{"tool",t},{"diameter",diameters[t]->GetValue()},
++            {"type",types[t]->GetSelection()==1?"cht":"standard"},{"cht_multiplier",factors[t]->GetValue()}});
++        if(!apply_nozzle_setup(next))return;
 +        wxMessageBox(_L("Ugelli salvati. Altezza layer e primo strato si adattano agli ugelli usati nella stampa; le quote parete restano separate dal riempimento combinato. I generici usano la stima Standard/CHT. Salva il progetto e rislicera."),_L("Ugelli INDX"),wxOK|wxICON_INFORMATION,parent);
 +    }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,parent);}
 +}
@@ -1068,6 +1133,7 @@ index 00000000..8a1322cd
 +    wxGetApp().app_config->set("indx_moonraker_url",url);return true;
 +}
 +void synchronize_indx_filaments(wxWindow* parent) {
++    struct Guard {Guard(){foreground_sync=true;} ~Guard(){foreground_sync=false;}} guard;
 +    try {
 +        if(!is_indx_printer())throw std::runtime_error(_u8L("Seleziona una stampante INDX con un numero di tool supportato."));
 +        if(!wxGetApp().check_and_save_current_preset_changes(_L("Sincronizza INDX"),"Salva le modifiche ai profili prima della sincronizzazione.",false))return;
@@ -1079,6 +1145,7 @@ index 00000000..8a1322cd
 +        while(task.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready){progress.Pulse();wxMilliSleep(30);}
 +        auto result=task.get();progress.Update(100);
 +        if(!result.error.empty())throw std::runtime_error(result.error);
++        import_printer_tools(result.remote);
 +        if(!result.library.empty())wxGetApp().app_config->set("indx_library_cache",result.library.dump());
 +        if(!result.assignments.is_object())throw std::runtime_error(_u8L("Assegnazioni touchscreen non valide."));
 +        auto& bundle=*wxGetApp().preset_bundle;
@@ -1486,14 +1553,35 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..7bbd2e0c
+index 00000000..9066c756
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,116 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
 +using namespace Slic3r::Indx;
++
++TEST_CASE("Automatic hardware import accepts only complete confirmed printer declarations", "[IndxChecks]") {
++    const size_t count=GENERATE(1,2,4,6,8,64);
++    Json tools=Json::array();
++    for(size_t t=0;t<count;++t)tools.push_back({{"tool",t},{"diameter",t%2?.8:.2},{"type",t%2?"cht":"standard"}});
++    Json remote={{"online",true},{"hardware",{{"schema",2},{"confirmed_at",100.},{"tools",tools}}}};
++    const auto imported=confirmed_tools(remote);
++    REQUIRE(imported.size()==count);
++    CHECK(imported.back().at("tool")==count-1);
++    CHECK(imported.front().at("diameter")==.2);
++    CHECK(imported.front().at("cht_multiplier")==1.3);
++    auto offline=remote;offline["online"]=false;CHECK(confirmed_tools(offline).empty());
++    auto unconfirmed=remote;unconfirmed["hardware"].erase("confirmed_at");CHECK(confirmed_tools(unconfirmed).empty());
++    auto bad=remote;bad["hardware"]["tools"][0]["tool"]=1;CHECK_THROWS(confirmed_tools(bad));
++    bad=remote;bad["hardware"]["tools"][0]["diameter"]=0;CHECK_THROWS(confirmed_tools(bad));
++    bad=remote;bad["hardware"]["tools"][0]["type"]="unknown";CHECK_THROWS(confirmed_tools(bad));
++    bad=remote;bad["hardware"]["tools"]=Json::array();CHECK_THROWS(confirmed_tools(bad));
++    bad=remote;bad["hardware"]["tools"]=Json::array();
++    for(size_t t=0;t<65;++t)bad["hardware"]["tools"].push_back({{"tool",t},{"diameter",.4},{"type","standard"}});
++    CHECK_THROWS(confirmed_tools(bad));
++}
 +
 +TEST_CASE("Combined layer count follows actual Z intervals", "[IndxChecks]") {
 +    const std::vector<double> zs={.14,.28,.42,.56,.70,.832};

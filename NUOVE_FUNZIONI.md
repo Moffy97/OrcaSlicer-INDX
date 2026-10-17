@@ -4,9 +4,13 @@ Questa preview estende l'integrazione SV08 Max. Le verifiche software non attest
 
 ## Numero di tool e ugelli
 
-In Orca premere **Ugelli**, scegliere il numero di tool e impostare diametro, Standard/CHT e fattore stimato CHT di ciascuno. Il limite software e 1-64, come nel codice Orca; non e una promessa di capacita fisica della SV08 Max. I nuovi tool partono da 0,40 mm Standard, da correggere prima dell'uso. Le scelte sono conservate per profilo stampante.
+Numero di tool, diametri, Standard/CHT e fattore stimato CHT si impostano una sola volta su **KlipperScreen > I miei filamenti > Conferma ugelli montati sulla stampante**. Orca importa automaticamente la dichiarazione confermata con la connessione INDX attiva e un profilo INDX selezionato. Il ciclo di lettura e di circa 15 secondi, oltre al tempo di rete; premere **INDX** esegue anche l'importazione esplicita prima di leggere i filamenti.
 
-Sul touchscreen, nella pagina **I miei filamenti**, premere **Conferma ugelli montati sulla stampante**. Dichiarare numero, diametri e tipi effettivamente montati. La sincronizzazione del catalogo Orca non sostituisce questa dichiarazione. Riducendo il numero di tool le varianti di calibrazione e le assegnazioni archiviate non vengono eliminate: tornando alla stessa combinazione si recuperano i dati ancora validi. Le funzioni del progetto che usano tool rimossi vanno riassegnate.
+Il pulsante **Ugelli** mostra la configurazione ricevuta dalla stampante. L'editor locale resta disponibile per preparare un profilo offline quando non e raggiungibile una dichiarazione confermata; alla successiva connessione la dichiarazione del touchscreen prevale. Il limite software e 1-64, non una promessa di capacita fisica della SV08 Max.
+
+L'importazione aggiorna il profilo stampante e i limiti di altezza layer, conserva una copia precedente in `indx-profile-backups`. Attende finche sono presenti modifiche non salvate nei profili, slicing/export attivi o finestre modali. Una risposta offline, incompleta o non confermata non riduce il numero di tool. La risposta di una connessione o di un profilo precedente viene scartata. Dopo un cambiamento occorre rifare lo slicing; il G-code gia esportato non cambia.
+
+Riducendo il numero di tool le varianti di calibrazione e le assegnazioni archiviate non vengono eliminate: tornando alla stessa combinazione si recuperano i dati ancora validi. Le funzioni del progetto che usano tool rimossi vanno riassegnate.
 
 Le macro della macchina devono dichiarare lo stesso `TOOL_POSITIONS.tool_count` e avere le posizioni reali di tutti i dock, secondo la [guida Bondtech INDX](https://github.com/BondtechAB/INDX). I pannelli e Orca non aggiungono queste posizioni nel firmware.
 
@@ -14,9 +18,8 @@ Le macro della macchina devono dichiarare lo stesso `TOOL_POSITIONS.tool_count` 
 
 1. Configurare i due nuovi dock nelle macro, con coordinate reali e `tool_count` pari a 6; collaudare aggancio, parcheggio e offset.
 2. Sul touchscreen aprire **I miei filamenti > Conferma ugelli montati sulla stampante**, impostare 6 e dichiarare diametro e Standard/CHT di tutti i tool.
-3. In Orca aprire **Ugelli**, impostare 6 e gli stessi diametri e tipi.
-4. Premere **INDX** in Orca per pubblicare il catalogo. Sul touchscreen premere **Sincronizza catalogo da Orca** e assegnare i filamenti anche a T4 e T5.
-5. Premere di nuovo **INDX** in Orca per importare le assegnazioni, poi **Controlla** e rifare lo slicing.
+3. Con Orca aperto e collegato alla macchina, attendere l'aggiornamento automatico. In alternativa premere **INDX**. Non reinserire numero o ugelli in Orca.
+4. Assegnare sul touchscreen i filamenti anche a T4 e T5; premere **INDX** in Orca per importarli, poi **Controlla** e rifare lo slicing.
 
 I dati di T0-T3 restano conservati. I nuovi tool richiedono le proprie calibrazioni. Aggiungere righe in Orca o sul touchscreen non crea dock e non collauda la macchina.
 
