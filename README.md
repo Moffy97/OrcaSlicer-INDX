@@ -2,23 +2,34 @@
 
 Integrazione sperimentale tra una build personalizzata di **OrcaSlicer** e **KlipperScreen** per una Sovol SV08 Max convertita a Bondtech INDX.
 
-**Target attuale: SV08 Max + INDX, quattro tool passivi, un solo feeder e riscaldatore fisico.** Il supporto ad altre stampanti e un obiettivo futuro, non una compatibilita gia verificata. Il progetto non e una release ufficiale OrcaSlicer, Bondtech, Sovol o KlipperScreen.
+**Target attuale: SV08 Max + INDX, numero di tool configurabile, un solo feeder e riscaldatore fisico.** Il supporto ad altre stampanti e un obiettivo futuro, non una compatibilita gia verificata. Il progetto non e una release ufficiale OrcaSlicer, Bondtech, Sovol o KlipperScreen.
+
+## Preview 0.2.0
+
+[Controllo stampante, calibrazioni e tool variabili](NUOVE_FUNZIONI.md). Il pulsante **Controlla** confronta solo i tool usati nel piatto con dichiarazione del montaggio, filamenti, parametri e stato Klipper. **Proponi** prepara assegnazioni per dettaglio, equilibrio o velocita. Il numero di tool non e piu fisso a quattro: i casi software 1/2/4/8/12/64 sono coperti da prove; dock e cablaggio restano da verificare per ogni configurazione fisica.
+
+```sh
+python verify.py
+python install_klipperscreen.py --check
+```
+
+L'installatore supporta `--rollback PERCORSO_BACKUP` insieme alle directory KlipperScreen/config. Il ripristino riguarda software e menu e conserva i dati filamento e calibrazione attuali. La versione e i protocolli sono dichiarati in [VERSION.json](VERSION.json).
 
 ## Funzioni
 
 - Libreria separata dei propri filamenti, con UUID stabile, nomi modificabili, marca, materiale e colore.
 - Temperature ugello/piano, PA, flow ratio e massimo flusso volumetrico richiamabili senza reinserire i valori.
 - Archivio calibrazioni per **filamento + tool + diametro + Standard/CHT**. Tornando alla stessa combinazione, i risultati vengono recuperati.
-- Pulsante **Ugelli**: diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
+- Pulsante **Ugelli**: numero di tool da 1 a 64 (limite software Orca), diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
 - Stima CHT modificabile per i profili generici: fattore iniziale 1,30. Il massimo flusso misurato prevale sempre sulla stima. Il diametro non viene usato come un moltiplicatore quadratico della capacita di fusione.
-- Pulsante **INDX**: catalogo Orca standard/personale, importazione persistente dei profili e assegnazione T0-T3 al progetto. Salvataggio della libreria in background con Orca aperto.
+- Pulsante **INDX**: catalogo Orca standard/personale, importazione persistente dei profili e assegnazione ai tool del progetto. Salvataggio della libreria in background con Orca aperto.
 - Test visivi PA, flow e massimo flusso dal touchscreen. La cella di carico non misura questi risultati.
 - Combinazione riempimento INDX: l'ugello del riempimento puo depositare uno strato alto quanto la somma degli strati parete accorpati, entro il proprio limite di altezza. Per esempio, due strati parete da 0,20 mm corrispondono a un riempimento da 0,40 mm. Le intersezioni geometriche e le zone solide restano gestite da Orca.
 - G-code adattato al feeder e al riscaldatore condivisi: PA sull'extruder fisico, nessun preriscaldamento degli ugelli parcheggiati.
 
 ## Stato e limiti
 
-Anteprima software da testare e perfezionare sulla SV08 Max. Compilazione Windows Release e prove automatiche locali disponibili; la sincronizzazione e stata verificata con un server Moonraker simulato. I nuovi pannelli richiedono ancora verifica GTK sulla macchina e collaudo fisico di stampa. Non vengono forniti risultati di calibrazione inventati.
+Anteprima software da testare e perfezionare sulla SV08 Max. Compilazione Windows Release e prove automatiche locali disponibili; la sincronizzazione e stata verificata con un server Moonraker simulato. I sei pannelli hanno superato costruzione e attivazione GTK sullo SPI-XI e i nove moduli sono stati installati con backup. Il collaudo fisico di stampa resta da eseguire. I dati simulati delle prove sono separati dai dati reali della macchina.
 
 **Nessuna procedura di questo repository esegue flash, convalida pinout, certifica quote dock o abilita automaticamente movimenti.** Homing, pulizia, aggancio, offset e collegamenti devono essere verificati sulla singola macchina. Le macro di commissioning devono bloccare i test finche la macchina non e collaudata.
 
@@ -61,7 +72,7 @@ I test fisici richiedono le macro gia collaudate `_INDX_SETUP`, `_INDX_REQUIRE_C
 
 ## Uso
 
-1. Aprire la build INDX con un profilo stampante INDX a quattro tool e con impostazioni personali salvate.
+1. Aprire la build INDX con un profilo stampante INDX con il numero di tool previsto e con impostazioni personali salvate.
 2. In **Ugelli**, dichiarare quelli realmente montati. Standard/CHT e una scelta indipendente dal materiale dell'ugello e dalla variante di estrusore interna di Orca.
 3. Nel pulsante **INDX**, configurare Moonraker con clic destro. Usare un indirizzo della propria stampante: il repository non contiene credenziali o indirizzi personali.
 4. Sul touchscreen sincronizzare il catalogo, creare il filamento da una base appropriata, impostare colore/temperature e salvarlo con un nome riconoscibile.

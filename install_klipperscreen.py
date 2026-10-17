@@ -1,38 +1,72 @@
-"""Local panel installer with backup. Run on the KlipperScreen computer."""
-import argparse,py_compile,shutil,tempfile,time,zipfile,subprocess,os
+"""Verified local panel update with preview, backup and rollback. No printer G-code."""
+import argparse,hashlib,json,os,py_compile,shutil,subprocess,tempfile,time,zipfile
 from pathlib import Path
+NAMES=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py','indx_commissioning.py','indx_setup.py','indx_tools.py']
 
-parser=argparse.ArgumentParser()
-parser.add_argument('--klipperscreen-dir',type=Path,required=True)
-parser.add_argument('--config-dir',type=Path,required=True)
-parser.add_argument('--restart',action='store_true',help='Restart KlipperScreen after copying panels; never runs printer G-code')
-args=parser.parse_args()
-ks=args.klipperscreen_dir.expanduser().resolve();config=args.config_dir.expanduser().resolve()
-if not (ks/'panels').is_dir() or not (ks/'ks_includes').is_dir():raise SystemExit('Not a KlipperScreen source directory')
-conf=config/'KlipperScreen.conf'
-if not conf.is_file():raise SystemExit('Existing KlipperScreen.conf is required; no configuration is invented')
-backup=config/('indx-screen-backup-'+str(time.time_ns()));backup.mkdir()
-shutil.copy2(conf,backup/conf.name)
-names=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py']
-with tempfile.TemporaryDirectory() as td,zipfile.ZipFile(Path(__file__).with_name('touchscreen.zip')) as archive:
- stage=Path(td)
- for name in names:
-  source=archive.read('touchscreen/'+name).decode('utf-8')
-  source=source.replace('/home/sovol/printer_data/config',str(config)).replace('/home/sovol/printer_data/gcodes',str(config.parent/'gcodes'))
-  (stage/name).write_text(source,encoding='utf-8');py_compile.compile(str(stage/name),doraise=True)
-  existing=ks/'panels'/name
-  if existing.exists():shutil.copy2(existing,backup/name)
- for name in ['indx-pa-bases.json','indx-filament-library.json','indx-filament-assignments.json','indx-pa-results.json','indx-tool-setup.json']:
-  if (config/name).exists():shutil.copy2(config/name,backup/name)
- for name in names:shutil.copy2(stage/name,ks/'panels'/name)
- if not (config/'indx-pa-bases.json').exists():(config/'indx-pa-bases.json').write_bytes(archive.read('touchscreen/legacy-bases.json'))
- text=conf.read_text(encoding='utf-8')
- for key,label,panel in [('filaments','I miei filamenti','indx_filaments'),('pa','Calibra PA','indx_pa'),('flow','Calibra flow','indx_flow'),('max_flow','Calibra flusso massimo','indx_max_flow')]:
-  section='[menu __main indx '+key+']'
-  if section not in text:text+='\n'+section+'\nname: '+label+'\nicon: filament\npanel: '+panel+'\n'
- if '[menu __main indx]' not in text:text+='\n[menu __main indx]\nname: INDX\nicon: filament\n'
- temp=conf.with_suffix('.indx-tmp');temp.write_text(text,encoding='utf-8');os.replace(temp,conf)
-print('Installed source panels. Backup:',backup)
-print('Syntax verified; GTK constructors, menus and physical commissioning still require verification.')
-print('No macro, MCU firmware, motion gate or calibration result was changed.')
-if args.restart:subprocess.run(['sudo','-n','systemctl','restart','KlipperScreen'],check=True)
+def package(root):
+ sums={line.split('  ',1)[1]:line.split('  ',1)[0] for line in (root/'SHA256SUMS').read_text().splitlines()}
+ for name in ('touchscreen.zip','VERSION.json'):
+  if hashlib.sha256((root/name).read_bytes()).hexdigest()!=sums.get(name):raise ValueError('Checksum mismatch: '+name)
+ version=json.loads((root/'VERSION.json').read_text())
+ if version.get('protocols')!={'catalog':2,'library':3,'hardware':2}:raise ValueError('Unsupported protocol versions')
+ return version
+
+def restore(backup,ks,config):
+ manifest=json.loads((backup/'rollback.json').read_text())
+ if manifest.get('ks')!=str(ks) or manifest.get('config')!=str(config):raise ValueError('Backup belongs to a different installation')
+ for name,digest in manifest['files'].items():
+  if name not in NAMES+['KlipperScreen.conf','indx-installed-version.json']:raise ValueError('Unexpected backup file')
+  if digest is not None and hashlib.sha256((backup/name).read_bytes()).hexdigest()!=digest:raise ValueError('Damaged backup: '+name)
+ for name,digest in manifest['files'].items():
+  target=config/name if name in ('KlipperScreen.conf','indx-installed-version.json') else ks/'panels'/name
+  if digest is None:target.unlink(missing_ok=True)
+  else:shutil.copy2(backup/name,target)
+
+def main():
+ parser=argparse.ArgumentParser(description=__doc__)
+ parser.add_argument('--klipperscreen-dir',type=Path);parser.add_argument('--config-dir',type=Path)
+ parser.add_argument('--check',action='store_true',help='Verify package, protocols and syntax without installing')
+ parser.add_argument('--rollback',type=Path,help='Restore named backup; keeps current filament/calibration data')
+ parser.add_argument('--restart',action='store_true',help='Restart KlipperScreen after successful install/rollback')
+ args=parser.parse_args();root=Path(__file__).resolve().parent
+ if not args.check and (not args.klipperscreen_dir or not args.config_dir):parser.error('Install/rollback require both directories')
+ if args.check and (args.rollback or args.restart):parser.error('--check cannot be combined with rollback or restart')
+ ks=args.klipperscreen_dir.expanduser().resolve() if args.klipperscreen_dir else None
+ config=args.config_dir.expanduser().resolve() if args.config_dir else None
+ if ks and (not (ks/'panels').is_dir() or not (ks/'ks_includes').is_dir()):raise ValueError('Not a KlipperScreen source directory')
+ if config and not (config/'KlipperScreen.conf').is_file():raise ValueError('Existing KlipperScreen.conf is required')
+ if args.rollback:
+  restore(args.rollback.expanduser().resolve(),ks,config);print('Panel/config rollback completed. Current filament/calibration data preserved.')
+ else:
+  version=package(root)
+  with tempfile.TemporaryDirectory() as td,zipfile.ZipFile(root/'touchscreen.zip') as archive:
+   stage=Path(td)
+   for name in NAMES:
+    source=archive.read('touchscreen/'+name).decode('utf-8')
+    if config:source=source.replace('/home/sovol/printer_data/config',config.as_posix()).replace('/home/sovol/printer_data/gcodes',(config.parent/'gcodes').as_posix())
+    (stage/name).write_text(source,encoding='utf-8');py_compile.compile(str(stage/name),doraise=True)
+   if args.check:print('Package, protocols and panel syntax verified:',version['version']);return
+   backup=config/('indx-screen-backup-'+str(time.time_ns()));backup.mkdir()
+   manifest={'ks':str(ks),'config':str(config),'files':{}}
+   for name in NAMES+['KlipperScreen.conf','indx-installed-version.json']:
+    target=config/name if name in ('KlipperScreen.conf','indx-installed-version.json') else ks/'panels'/name
+    manifest['files'][name]=hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
+    if target.exists():shutil.copy2(target,backup/name)
+   (backup/'rollback.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+   text=(config/'KlipperScreen.conf').read_text(encoding='utf-8')
+   for key,label,panel in [('filaments','I miei filamenti','indx_filaments'),('pa','Calibra PA','indx_pa'),('flow','Calibra flow','indx_flow'),('max_flow','Calibra flusso massimo','indx_max_flow'),('setup','Collaudo INDX','indx_setup'),('tools','Tool configurati','indx_tools')]:
+    section='[menu __main indx '+key+']'
+    if section not in text:text+='\n'+section+'\nname: '+label+'\nicon: filament\npanel: '+panel+'\n'
+   if '[menu __main indx]' not in text:text+='\n[menu __main indx]\nname: INDX\nicon: filament\n'
+   try:
+    for name in NAMES:shutil.copy2(stage/name,ks/'panels'/name)
+    temp=config/'KlipperScreen.conf.indx-tmp';temp.write_text(text,encoding='utf-8');os.replace(temp,config/'KlipperScreen.conf')
+    (config/'indx-installed-version.json').write_text(json.dumps(version,indent=2),encoding='utf-8')
+    if not (config/'indx-pa-bases.json').exists():(config/'indx-pa-bases.json').write_bytes(archive.read('touchscreen/legacy-bases.json'))
+   except Exception:
+    restore(backup,ks,config);raise
+   print('Installed preview',version['version'],'Backup:',backup)
+   print('GTK display and physical commissioning require on-machine testing. No firmware or movement gate changed.')
+ if args.restart:subprocess.run(['sudo','-n','systemctl','restart','KlipperScreen'],check=True)
+
+if __name__=='__main__':main()
