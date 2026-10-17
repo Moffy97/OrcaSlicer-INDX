@@ -22,7 +22,7 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..e7092234
+index 00000000..0b521fe6
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
 @@ -0,0 +1,19 @@
@@ -44,7 +44,7 @@ index 00000000..e7092234
 +
 +For INDX, combined infill uses the nozzle assigned to the current sparse or internal-solid surface and its configured maximum layer height. The existing multi-layer intersections and summed surface thickness provide the accumulated wall-layer height. The change avoids constraining sparse infill by an unrelated internal-solid nozzle, preserves perimeter layer heights, and leaves other printer behavior unchanged.
 +
-+Nozzle changes also adapt process layer_height and initial_layer_print_height into a separate owned INDX process preset. A conservative cap across all configured tools uses min(max_layer_height, 0.7 * nozzle_diameter). Requested heights are restored when returning to compatible hardware, unless manually changed. Combined sparse infill remains limited by its own assigned nozzle.
++Process layer_height and initial_layer_print_height adapt into a separate owned INDX process preset after the current plate is applied. Print::indx_layer_height_limit resolves the plate's region, volume/painting, height-range, support, tower and explicit tool-change filament assignments through the filament mapping. Only used tools constrain the shared Z schedule, using min(max_layer_height, 0.7 * nozzle_diameter). Empty plates have no usage limit. Model, assignment and hardware changes recalculate before validation/slicing and reapply the adapted process. Requested heights are restored when usage permits, unless manually changed. Combined sparse infill sums the base layer heights within its own assigned nozzle limit.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -120,6 +120,67 @@ index 3c90a4e9..44c4007a 100644
  
      enum class Acceleration {
          Travel,
+diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
+index 93a71dcd..2a98264b 100644
+--- a/src/libslic3r/Print.cpp
++++ b/src/libslic3r/Print.cpp
+@@ -672,6 +672,44 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
+     return extruders;
+ }
+ 
++// Reuse the plate's region, painted-volume, height-range and support assignments.
++// Installed but unassigned nozzles must not constrain this print.
++double Print::indx_layer_height_limit() const
++{
++    if (m_config.machine_start_gcode.value.find("INDX_PRINT_START") == std::string::npos)
++        return 0.;
++    double cap = 0.;
++    std::vector<unsigned int> filaments;
++    for (const PrintObject* object : m_objects) {
++        for (const PrintRegion& region : object->all_regions())
++            region.collect_object_printing_extruders(*this, filaments);
++        for (const ModelVolume* volume : object->model_object()->volumes)
++            if (volume->is_model_part())
++                for (size_t filament : volume->get_extruders_from_multi_material_painting())
++                    filaments.push_back(static_cast<unsigned int>(filament));
++    }
++    // Current-tool supports reuse the object feature tools, rather than adding
++    // an object's default filament when every feature explicitly overrides it.
++    std::vector<unsigned int> supports;
++    for (const PrintObject* object : m_objects)
++        if (object->has_support_material())
++            append_support_extruders(object->config(), unsigned(m_config.filament_diameter.size()), supports);
++    append(filaments, supports);
++    append_tool_change_extruders(filaments);
++    append_wipe_tower_extruder(filaments);
++    sort_remove_duplicates(filaments);
++    for (unsigned int filament : filaments) {
++        const size_t tool = get_extruder_index(m_config, filament);
++        if (tool >= m_config.nozzle_diameter.size())
++            continue;
++        const double diameter_limit = 0.7 * m_config.nozzle_diameter.get_at(tool);
++        const double configured = m_config.max_layer_height.get_at(tool);
++        const double limit = configured > 0. ? std::min(configured, diameter_limit) : diameter_limit;
++        cap = cap > 0. ? std::min(cap, limit) : limit;
++    }
++    return cap;
++}
++
+ // Appends 0-based indices of the filaments the tool changes of the current plate switch to.
+ void Print::append_tool_change_extruders(std::vector<unsigned int> &extruders) const
+ {
+diff --git a/src/libslic3r/Print.hpp b/src/libslic3r/Print.hpp
+index 11de1d80..afcbf7bc 100644
+--- a/src/libslic3r/Print.hpp
++++ b/src/libslic3r/Print.hpp
+@@ -1121,6 +1121,7 @@ public:
+ 
+     std::vector<unsigned int> object_extruders() const;
+     std::vector<unsigned int> support_material_extruders() const;
++    double indx_layer_height_limit() const;
+     std::vector<unsigned int> extruders(bool conside_custom_gcode = false) const;
+     double              max_allowed_layer_height() const;
+     bool                has_support_material() const;
 diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
 index 7e9b21cc..28e462bb 100644
 --- a/src/libslic3r/PrintObject.cpp
@@ -166,10 +227,10 @@ index 367aadaa..74804eb9 100644
      Config/Snapshot.cpp
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..c50350f4
+index 00000000..ba4861c6
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,531 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -179,6 +240,7 @@ index 00000000..c50350f4
 +#include "libslic3r/PresetBundle.hpp"
 +#include "libslic3r/Preset.hpp"
 +#include "libslic3r/PrintConfig.hpp"
++#include "libslic3r/Print.hpp"
 +#include "libslic3r/Config.hpp"
 +#include "libslic3r/Semver.hpp"
 +#include "libslic3r/AppConfig.hpp"
@@ -447,21 +509,14 @@ index 00000000..c50350f4
 +    if(!obsolete.empty())collection.select_preset_by_name(selected_name,true);
 +}
 +
-+void adapt_layer_heights() {
++bool adapt_layer_heights(const Print& print) {
++    const double cap=print.indx_layer_height_limit();
++    if(cap<=0.)return false;
 +    auto& bundle=*wxGetApp().preset_bundle;auto* app=wxGetApp().app_config;
 +    Preset process=bundle.prints.get_edited_preset();
-+    const auto& printer=bundle.printers.get_edited_preset().config;
-+    const auto* diameters=printer.option<ConfigOptionFloats>("nozzle_diameter");
-+    const auto* maxima=printer.option<ConfigOptionFloats>("max_layer_height");
-+    if(!diameters || diameters->values.empty())return;
-+    double cap=2.;
-+    for(size_t t=0;t<diameters->values.size();++t){
-+        double limit=maxima && maxima->get_at(t)>0?maxima->get_at(t):diameters->get_at(t)*.7;
-+        cap=std::min(cap,std::min(limit,diameters->get_at(t)*.7));
-+    }
 +    auto* layer=process.config.option<ConfigOptionFloat>("layer_height");
 +    auto* first=process.config.option<ConfigOptionFloat>("initial_layer_print_height");
-+    if(!layer || !first)return;
++    if(!layer || !first)return false;
 +    const auto history_raw=app->get("indx_auto_layer");Json history=history_raw.empty()?Json::object():Json::parse(history_raw);
 +    double wanted=layer->value,wanted_first=first->value;
 +    std::string base=process.name;
@@ -469,7 +524,7 @@ index 00000000..c50350f4
 +        wanted=history.at("requested").get<double>();wanted_first=history.at("requested_first").get<double>();base=history.at("base").get<std::string>();
 +    }
 +    const double height=std::min(wanted,cap),initial=std::min(wanted_first,cap);
-+    if(std::abs(layer->value-height)<1e-6 && std::abs(first->value-initial)<1e-6)return;
++    if(std::abs(layer->value-height)<1e-6 && std::abs(first->value-initial)<1e-6)return false;
 +    layer->value=height;first->value=initial;
 +    std::ostringstream value;value.imbue(std::locale::classic());value<<std::fixed<<std::setprecision(3)<<height;
 +    const std::string name="INDX h"+value.str()+" - "+digest(base+bundle.printers.get_edited_preset().name).substr(0,10);
@@ -479,6 +534,7 @@ index 00000000..c50350f4
 +    app->set("indx_auto_layer_profiles",owned.dump());
 +    app->set("indx_auto_layer",Json({{"profile",name},{"base",base},{"requested",wanted},{"requested_first",wanted_first},{"applied",height},{"applied_first",initial}}).dump());
 +    wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);
++    return true;
 +}
 +
 +struct Publisher {
@@ -512,6 +568,9 @@ index 00000000..c50350f4
 +        pending=std::async(std::launch::async,[url,previous,data=std::move(data)](){return transfer(url,data,false,previous);});
 +    }
 +};
++}
++bool adapt_indx_layer_heights(const Print& print) {
++    return adapt_layer_heights(print);
 +}
 +void install_indx_profile_publisher(wxWindow* owner) {
 +    static std::set<wxWindow*> owners;
@@ -559,7 +618,7 @@ index 00000000..c50350f4
 +        const std::string printer_name=printer.can_overwrite()?printer.name:printer.name+" - Ugelli personali";
 +        bundle.printers.save_current_preset(printer_name,false,false,&printer);
 +        wxGetApp().app_config->set("indx_nozzle_setup",next.dump());
-+        adapt_layer_heights();
++        // The background apply resolves current plate assignments before adapting Z.
 +        auto raw=wxGetApp().app_config->get("indx_generated_sources");Json mapping=raw.empty()?Json::object():Json::parse(raw);
 +        Json assignments=Json::object();
 +        for(int t=0;t<4;++t){const auto* active=bundle.filaments.find_preset(bundle.filament_presets[t],false);
@@ -591,7 +650,7 @@ index 00000000..c50350f4
 +        wxGetApp().load_current_presets(false,false);wxGetApp().plater()->on_filament_count_change(4);
 +        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();bundle.export_selections(*wxGetApp().app_config);
 +        wxGetApp().app_config->save();
-+        wxMessageBox(_L("Ugelli salvati. Altezza layer e primo strato adattati ai limiti dei quattro ugelli; le quote parete restano separate dal riempimento combinato. I generici usano la stima Standard/CHT. Salva il progetto e rislicera."),_L("Ugelli INDX"),wxOK|wxICON_INFORMATION,parent);
++        wxMessageBox(_L("Ugelli salvati. Altezza layer e primo strato si adattano agli ugelli usati nella stampa; le quote parete restano separate dal riempimento combinato. I generici usano la stima Standard/CHT. Salva il progetto e rislicera."),_L("Ugelli INDX"),wxOK|wxICON_INFORMATION,parent);
 +    }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,parent);}
 +}
 +bool configure_indx_connection(wxWindow* parent) {
@@ -705,20 +764,21 @@ index 00000000..c50350f4
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
 new file mode 100644
-index 00000000..465a52e3
+index 00000000..be919fc9
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.hpp
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,9 @@
 +#pragma once
 +class wxWindow;
-+namespace Slic3r { namespace GUI {
++namespace Slic3r { class Print; namespace GUI {
++bool adapt_indx_layer_heights(const Print& print);
 +void install_indx_profile_publisher(wxWindow* owner);
 +void synchronize_indx_filaments(wxWindow* parent);
 +bool configure_indx_connection(wxWindow* parent);
 +void configure_indx_nozzles(wxWindow* parent);
 +} }
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 6e4d3e34..6c860cd7 100644
+index 6e4d3e34..280ab569 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -1,3 +1,4 @@
@@ -749,11 +809,29 @@ index 6e4d3e34..6c860cd7 100644
      //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
  
      ScalableButton* set_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "settings");
+@@ -11364,6 +11381,17 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
+     else
+         invalidated = background_process.apply(this->model, preset_bundle->full_config(false));
+ 
++    // Resolve usage from this plate after apply, then reapply the adapted process
++    // before validation/slicing. This also runs after model and tool assignment edits.
++    if (printer_technology == ptFFF && adapt_indx_layer_heights(*background_process.fff_print())) {
++        PartPlate* plate = background_process.get_current_plate();
++        auto maps = plate->get_real_filament_maps(preset_bundle->project_config);
++        auto volumes = plate->get_filament_volume_maps();
++        if (volumes.empty()) volumes = preset_bundle->get_default_nozzle_volume_types_for_filaments(maps);
++        background_process.apply(this->model, preset_bundle->full_config(false, maps, volumes));
++        invalidated = Print::APPLY_STATUS_INVALIDATED;
++    }
++
+     if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))
+         // BBS: add only gcode mode
+         q->set_only_gcode(false);
 diff --git a/tests/fff_print/test_fill.cpp b/tests/fff_print/test_fill.cpp
-index 1fbedcda..1a2b2965 100644
+index 1fbedcda..5f119f33 100644
 --- a/tests/fff_print/test_fill.cpp
 +++ b/tests/fff_print/test_fill.cpp
-@@ -51,6 +51,54 @@
+@@ -51,6 +51,101 @@
  
  using namespace Slic3r;
  
@@ -803,6 +881,53 @@ index 1fbedcda..1a2b2965 100644
 +    CHECK(largest==expected_layers);
 +    if(expected_layers>1)CHECK(combined>0);
 +    else CHECK(combined==0);
++}
++
++TEST_CASE("INDX layer limits follow used plate tools and their mapping", "[Fill][INDX][UsedLayerTools]")
++{
++    auto config = Slic3r::Test::multifilament_config(2);
++    config.set_key_value("machine_start_gcode", new ConfigOptionString("INDX_PRINT_START"));
++    config.set_key_value("nozzle_diameter", new ConfigOptionFloats({.2, .8}));
++    config.set_key_value("max_layer_height", new ConfigOptionFloats({.14, .56}));
++    config.set_key_value("filament_map", new ConfigOptionInts({1, 2}));
++    config.set_key_value("filament_map_mode", new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(false));
++    config.set_key_value("enable_support", new ConfigOptionBool(false));
++    Print print;
++    Model model;
++    Slic3r::Test::init_print({Slic3r::Test::cube(12)}, print, model, config);
++    model.objects.front()->config.set_key_value("extruder", new ConfigOptionInt(2));
++    print.apply(model, config);
++    CHECK_THAT(print.indx_layer_height_limit(), Catch::Matchers::WithinAbs(.56, 1e-6));
++
++    // A used small nozzle constrains the shared Z schedule, including supports.
++    config.set_key_value("enable_support", new ConfigOptionBool(true));
++    config.set_key_value("support_filament", new ConfigOptionInt(1));
++    config.set_key_value("support_interface_filament", new ConfigOptionInt(1));
++    print.apply(model, config);
++    CHECK_THAT(print.indx_layer_height_limit(), Catch::Matchers::WithinAbs(.14, 1e-6));
++    config.set_key_value("enable_support", new ConfigOptionBool(false));
++    print.apply(model, config);
++    CHECK_THAT(print.indx_layer_height_limit(), Catch::Matchers::WithinAbs(.56, 1e-6));
++
++    // Explicit feature assignments replace an unused default object filament.
++    model.objects.front()->config.set_key_value("extruder", new ConfigOptionInt(1));
++    for (const char* role : {"outer_wall_filament_id", "inner_wall_filament_id", "sparse_infill_filament_id",
++                             "internal_solid_filament_id", "top_surface_filament_id", "bottom_surface_filament_id"})
++        config.set_key_value(role, new ConfigOptionInt(2));
++    print.apply(model, config);
++    CHECK_THAT(print.indx_layer_height_limit(), Catch::Matchers::WithinAbs(.56, 1e-6));
++
++    config.set_key_value("filament_map", new ConfigOptionInts({2, 1}));
++    print.apply(model, config);
++    CHECK_THAT(print.indx_layer_height_limit(), Catch::Matchers::WithinAbs(.14, 1e-6));
++    config.set_key_value("machine_start_gcode", new ConfigOptionString("G28"));
++    print.apply(model, config);
++    CHECK(print.indx_layer_height_limit() == 0.);
++    config.set_key_value("machine_start_gcode", new ConfigOptionString("INDX_PRINT_START"));
++    Model empty;
++    print.apply(empty, config);
++    CHECK(print.indx_layer_height_limit() == 0.);
 +}
 +
  bool test_if_solid_surface_filled(const ExPolygon& expolygon, double flow_spacing, double angle = 0, double density = 1.0);

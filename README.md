@@ -33,6 +33,7 @@ Anteprima software da testare e perfezionare sulla SV08 Max. Compilazione Window
 | `test_profiles.py` | Verifiche isolate di libreria, tipi di ugello e generatori di test |
 | `PROMPTS.md` | Prompt riutilizzabili per modificare Orca e KlipperScreen |
 | `Guida_OrcaSlicer_INDX_SV08Max.pdf` | Guida italiana al funzionamento e al collaudo |
+| `INDX_Altezze_layer_esempi_grafici.pdf` | Quattro pagine illustrate: tool inutilizzati, piano Z comune, infill combinato e supporti |
 | `LICENSE` | AGPL-3.0, mantenuta dal progetto OrcaSlicer |
 
 ## Preparare il sorgente Orca
@@ -69,7 +70,7 @@ I test fisici richiedono le macro gia collaudate `_INDX_SETUP`, `_INDX_REQUIRE_C
 
 Quando si cambiano diametro o tipo, le calibrazioni precedenti restano archiviate ma non vengono applicate alla nuova combinazione. Gli aumenti CHT sono stime di partenza: non attestano una prestazione fisica della SV08 Max.
 
-Dal pulsante **Ugelli**, il cambio hardware adatta automaticamente altezza strato e primo strato in un processo INDX separato, conservando gli altri parametri. Il limite prudente e il minore dei limiti dei quattro tool configurati (70% del diametro): un ugello da 0,20 mm limita lo strato a 0,14 mm. Questo vale anche se quel tool non e ancora assegnato a un oggetto. Tornando a ugelli piu grandi si ripristinano le altezze richieste, se non sono state cambiate manualmente. Il riempimento combinato usa invece il limite del proprio tool. Dopo il cambio salvare e rielaborare lo slicing.
+L'altezza strato e il primo strato vengono adattati automaticamente in un processo INDX separato in base agli ugelli **usati nel piatto corrente**, includendo parti dipinte, assegnazioni per altezza, riempimento e supporti. La mappatura filamento/tool viene risolta prima del calcolo. Un ugello montato ma inutilizzato non limita la stampa. Il limite comune e il minore dei limiti dei tool usati (70% del diametro): se usi 0,20 e 0,80 mm, il layer base non supera 0,14 mm; usando solo 0,80 mm, il limite e 0,56 mm. Il limite e un massimo: non aumenta automaticamente una richiesta piu fine. Modificare il modello, i tool o gli ugelli ricalcola il limite e ripristina le altezze richieste quando possibile, se non cambiate manualmente. Il riempimento combinato somma le altezze dei layer base entro il limite del proprio tool, mantenendo le quote Z coordinate per tutta la stampa. Salvare e rielaborare lo slicing dopo i cambi.
 
 ## Riferimenti
 
