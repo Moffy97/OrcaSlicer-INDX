@@ -134,3 +134,7 @@ Conserva la distinzione fra adesione nel modello e rilascio dei supporti. La mat
 ## Conservare la mappatura esplicita
 
 Mantieni i pulsanti Automatico e Manuale nella pagina principale Filamenti e i selettori Tool nello stesso pannello. In Manuale non sostituire la mappa del progetto durante le proposte Auto slice. In Automatico ricostruisci la mappa posizionale quando e univoca. Testa il principale nel secondo slot da 0,4 mm con il primo slot di colore o materiale diverso, senza indebolire le regole di compatibilita. Conserva il supporto a un numero variabile di tool.
+
+## Ugelli locali o dalla stampante
+
+Mantieni il selettore Ugelli Automatico/Manuale indipendente dalla mappatura filamenti. In Automatico importa solo montaggi confermati; in Manuale conserva diametro e Standard/CHT locali durante il polling. Non esportare questi valori come montaggio fisico e non indebolire il preflight. Verifica il cambio diretto, la persistenza e il ritorno alla lettura automatica.

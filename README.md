@@ -128,3 +128,11 @@ Lo studio CHT riguarda un hardware specifico: non e una misura di questa convers
 In Filamenti scegli **Automatico / Manuale** e leggi o modifica il tool sotto ogni slot. Corretto il falso tool mancante quando il principale e il filamento 2: [uso e verifica](PROVA_MAPPATURA_TOOL.md). La sezione del modello mostra solo il risultato selezionato, con quota, altezza layer e larghezza linea reali. [Guida completa aggiornata](Guida_completa_INDX_Orca_KlipperScreen.pdf).
 
 La personalizzazione web Mainsail e disponibile in [mainsail-indx.zip](mainsail-indx.zip): tema e panoramica locale in sola lettura. Nessuna installazione di Fluidd.
+
+## Ugelli direttamente nella pagina principale
+
+[Automatico / Manuale per diametro e Standard/CHT](UGELLI_MANUALI_AUTOMATICI.md). Scelta separata dalla mappatura dei filamenti; in Manuale gli ugelli locali non vengono sostituiti dal polling.
+
+## Download Windows e plugin SV08 Max
+
+[Orca INDX completo con profilo SV08 Max](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.0-preview.20261017/OrcaSlicer-INDX-Windows-x64-0.3.0-preview.zip) · [Plugin KlipperScreen SV08 Max](PLUGIN_KLIPPERSCREEN_SV08MAX.md) · [Profili scaricabili](PROFILI_DOWNLOAD.md). La [versione INDX generica semplice](https://github.com/Moffy97/OrcaSlicer-INDX-Generic) ha repository e download separati, senza sincronizzazione o Auto slice personalizzati.

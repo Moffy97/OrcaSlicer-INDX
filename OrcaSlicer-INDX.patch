@@ -764,10 +764,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..ebd6bbea
+index 00000000..abfcf5a4
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1740 @@
+@@ -0,0 +1,1886 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -941,6 +941,17 @@ index 00000000..ebd6bbea
 +    const auto raw=wxGetApp().app_config->get("indx_manual_mapping_printers");
 +    try{return !raw.empty() && Json::parse(raw).value(wxGetApp().preset_bundle->printers.get_edited_preset().name,false);}catch(const std::exception&){return false;}
 +}
++bool manual_indx_nozzles() {
++    const auto raw=wxGetApp().app_config->get("indx_manual_nozzle_printers");
++    try{return !raw.empty() && Json::parse(raw).value(wxGetApp().preset_bundle->printers.get_edited_preset().name,false);}catch(const std::exception&){return false;}
++}
++void set_manual_indx_nozzles(bool manual) {
++    const auto raw=wxGetApp().app_config->get("indx_manual_nozzle_printers");Json saved=Json::object();
++    try{if(!raw.empty())saved=Json::parse(raw);}catch(const std::exception&){}
++    saved[wxGetApp().preset_bundle->printers.get_edited_preset().name]=manual;
++    wxGetApp().app_config->set("indx_manual_nozzle_printers",saved.dump());
++    ++sync_generation;
++}
 +void set_manual_indx_mapping(bool manual) {
 +    const auto raw=wxGetApp().app_config->get("indx_manual_mapping_printers");Json saved=Json::object();
 +    try{if(!raw.empty())saved=Json::parse(raw);}catch(const std::exception&){}
@@ -1001,7 +1012,10 @@ index 00000000..ebd6bbea
 +    const auto& p = wxGetApp().preset_bundle->printers.get_edited_preset();
 +    const auto* sizes = p.config.option<ConfigOptionFloats>("nozzle_diameter");
 +    const auto* start=p.config.option<ConfigOptionString>("machine_start_gcode");
-+    return start && start->value.find("INDX_PRINT_START")!=std::string::npos && sizes && sizes->values.size() >= 1 && sizes->values.size() <= MAXIMUM_EXTRUDER_NUMBER;
++    // Basic INDX templates use the shared feeder/heater G-code support but do
++    // not opt into the SV08 Max touchscreen protocol or automatic optimization.
++    return start && start->value.find("INDX_PRINT_START")!=std::string::npos &&
++        start->value.find("INDX_BASIC_PROFILE")==std::string::npos && sizes && sizes->values.size() >= 1 && sizes->values.size() <= MAXIMUM_EXTRUDER_NUMBER;
 +}
 +Json catalog_snapshot() {
 +    auto& bundle = *wxGetApp().preset_bundle;
@@ -1414,8 +1428,23 @@ index 00000000..ebd6bbea
 +    return true;
 +}
 +bool import_printer_tools(const Json& remote) {
++    // Manual nozzle declarations belong to this Orca printer profile. Polling
++    // must keep reading filament data without replacing those declarations.
++    if(manual_indx_nozzles())return false;
 +    const auto tools=Indx::confirmed_tools(remote);
 +    return !tools.empty() && apply_nozzle_setup(tools);
++}
++void apply_manual_nozzle_setup(const Json& next) {
++    auto maps=sidebar_indx_mapping(false);const auto old_slots=maps.size();const bool manual_map=manual_indx_mapping();
++    if(!apply_nozzle_setup(next))return;
++    set_manual_indx_nozzles(true);
++    maps.resize(wxGetApp().preset_bundle->filament_presets.size(),1);
++    for(size_t f=0;f<maps.size();++f){
++        if(f>=old_slots && f<next.size())maps[f]=int(f)+1;
++        if(maps[f]<1 || size_t(maps[f])>next.size())maps[f]=1;
++    }
++    set_manual_indx_mapping(manual_map);apply_sidebar_indx_mapping(maps);
++    wxGetApp().app_config->save();
 +}
 +
 +void apply_assigned_library(const std::vector<LibraryEntry>& entries) {
@@ -1548,6 +1577,123 @@ index 00000000..ebd6bbea
 +    return adapt_layer_heights(print);
 +}
 +bool is_indx_profile() {return is_indx_printer();}
++wxWindow* create_indx_nozzle_controls(wxWindow* parent) {
++    auto* panel=new wxPanel(parent);auto* box=new wxBoxSizer(wxVERTICAL);
++    auto* header=new wxBoxSizer(wxHORIZONTAL);
++    header->Add(new wxStaticText(panel,wxID_ANY,_L("Ugelli")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,6);
++    auto* automatic=new wxToggleButton(panel,wxID_ANY,_L("Automatico"));
++    auto* manual=new wxToggleButton(panel,wxID_ANY,_L("Manuale"));
++    header->Add(automatic,1,wxRIGHT,6);header->Add(manual,1);
++    auto* remove=new wxButton(panel,wxID_ANY,"-",wxDefaultPosition,wxSize(26,-1),wxBU_EXACTFIT);
++    auto* add=new wxButton(panel,wxID_ANY,"+",wxDefaultPosition,wxSize(26,-1),wxBU_EXACTFIT);
++    header->Add(remove,0,wxLEFT,4);header->Add(add,0,wxLEFT,4);
++    remove->SetToolTip(_L("Rimuovi l'ultimo ugello dal profilo Orca. Le sue assegnazioni del piatto corrente tornano a T0. Non rimuove il filamento."));
++    add->SetToolTip(_L("Aggiungi un ugello al profilo Orca (0,4 mm Standard). Non modifica il firmware o il montaggio sul touch."));
++    auto resize=[panel](int delta){
++        if(!manual_indx_nozzles() || wxGetApp().plater()->is_background_process_slicing())return;
++        try {
++            if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
++            auto next=nozzle_setup();
++            if(delta>0){if(next.size()>=size_t(MAXIMUM_EXTRUDER_NUMBER))return;next.push_back({{"tool",next.size()},{"diameter",.4},{"type","standard"},{"cht_multiplier",1.3}});}
++            else {if(next.size()<=1)return;next.erase(next.size()-1);}
++            apply_manual_nozzle_setup(next);
++        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,panel);}
++    };
++    add->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(1);});remove->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(-1);});
++    box->Add(header,0,wxEXPAND|wxBOTTOM,4);
++    auto* rows_panel=new wxPanel(panel);auto* grid=new wxFlexGridSizer(2,4,6);
++    grid->AddGrowableCol(0);grid->AddGrowableCol(1);rows_panel->SetSizer(grid);
++    box->Add(rows_panel,0,wxEXPAND);
++    auto* status=new wxStaticText(panel,wxID_ANY,_L("Automatico: ugelli da KlipperScreen"));box->Add(status,0,wxTOP,2);
++    panel->SetSizerAndFit(box);
++    automatic->SetToolTip(_L("Importa numero, diametri e Standard/CHT confermati su KlipperScreen. Senza dati recenti mantiene gli ultimi valori."));
++    manual->SetToolTip(_L("Modifica gli ugelli di questo profilo Orca. Non cambia il montaggio dichiarato su KlipperScreen: prima di stampare i dati devono coincidere."));
++    manual->Bind(wxEVT_TOGGLEBUTTON,[](wxCommandEvent&){set_manual_indx_nozzles(true);wxGetApp().app_config->save();});
++    automatic->Bind(wxEVT_TOGGLEBUTTON,[panel](wxCommandEvent&){
++        try {
++            if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
++            set_manual_indx_nozzles(false);
++            const auto raw=wxGetApp().app_config->get("indx_printer_snapshot");
++            const auto remote=raw.empty()?Json::object():Json::parse(raw);
++            const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
++            if(remote.value("host",std::string())==host_url() && remote.value("online",false) && now-remote.value("observed_at",int64_t(0))<=60)
++                import_printer_tools(remote);
++            wxGetApp().app_config->save();
++        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,panel);}
++    });
++    struct Row {wxSpinCtrlDouble* diameter;wxChoice* type;std::string displayed_type;};
++    auto rows=std::make_shared<std::vector<Row>>();
++    const wxWeakRef<wxWindow> weak=panel;
++    panel->Bind(wxEVT_UPDATE_UI,[panel,automatic,manual,remove,add,rows_panel,grid,rows,status,weak](wxUpdateUIEvent&){
++        if(!is_indx_profile())return;
++        const auto tools=nozzle_setup();const bool editing=manual_indx_nozzles();
++        const bool enabled=!wxGetApp().plater()->is_background_process_slicing() && !foreground_sync;
++        automatic->SetValue(!editing);manual->SetValue(editing);automatic->Enable(enabled);manual->Enable(enabled);
++        remove->Enable(editing && enabled && tools.size()>1);add->Enable(editing && enabled && tools.size()<size_t(MAXIMUM_EXTRUDER_NUMBER));
++        if(rows->size()!=tools.size()){
++            grid->Clear(true);rows->clear();
++            for(size_t t=0;t<tools.size();++t){
++                auto* cell=new wxPanel(rows_panel);auto* line=new wxBoxSizer(wxHORIZONTAL);
++                line->Add(new wxStaticText(cell,wxID_ANY,wxString::Format("T%zu",t)),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,4);
++                auto* diameter=new wxSpinCtrlDouble(cell,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(64,-1),wxSP_ARROW_KEYS|wxTE_PROCESS_ENTER,.1,2.,.4,.05);
++                diameter->SetDigits(2);diameter->SetName(wxString::Format(_L("Diametro ugello T%zu (mm)"),t));
++                auto* type=new wxChoice(cell,wxID_ANY,wxDefaultPosition,wxSize(88,-1));type->Append(_L("Standard"));type->Append("CHT");
++                type->SetName(wxString::Format(_L("Tipo ugello T%zu"),t));
++                line->Add(diameter,1,wxRIGHT,4);line->Add(type,1);cell->SetSizerAndFit(line);grid->Add(cell,1,wxEXPAND);
++                rows->push_back({diameter,type,{}});
++                auto queued=std::make_shared<bool>(false);
++                auto commit=[weak,diameter,type,t,queued,rows](){
++                    if(!weak || *queued || !manual_indx_nozzles())return;
++                    const auto current=nozzle_setup();if(t>=current.size())return;
++                    double value=0.;const auto entered=diameter->GetTextValue();
++                    if(!entered.ToDouble(&value) && !entered.ToCDouble(&value))return;
++                    const std::string kind=type->GetSelection()==1?"cht":"standard";
++                    if(std::abs(value-current[t].at("diameter").get<double>())<.0001 && kind==current[t].at("type").get<std::string>())return;
++                    *queued=true;const auto printer=wxGetApp().preset_bundle->printers.get_edited_preset().name;
++                    weak->CallAfter([weak,t,value,kind,queued,printer,rows](){
++                        *queued=false;
++                        if(t<rows->size())rows->at(t).displayed_type.clear();
++                        if(!weak || !manual_indx_nozzles() || wxGetApp().plater()->is_background_process_slicing() || printer!=wxGetApp().preset_bundle->printers.get_edited_preset().name)return;
++                        try {
++                            if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
++                            auto next=nozzle_setup();if(t>=next.size() || !std::isfinite(value) || value<.1 || value>2.)return;
++                            next[t]["diameter"]=value;next[t]["type"]=kind;
++                            apply_manual_nozzle_setup(next);
++                        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,weak.get());}
++                    });
++                };
++                diameter->Bind(wxEVT_SPINCTRLDOUBLE,[commit](wxSpinDoubleEvent&){commit();});
++                diameter->Bind(wxEVT_TEXT_ENTER,[commit](wxCommandEvent&){commit();});
++                auto confirm=[commit,type](wxKeyEvent& e){
++                    if(e.GetKeyCode()==WXK_RETURN || e.GetKeyCode()==WXK_NUMPAD_ENTER){commit();type->SetFocus();}
++                    else e.Skip();
++                };
++                diameter->Bind(wxEVT_CHAR_HOOK,confirm);
++                for(auto* child:diameter->GetChildren())child->Bind(wxEVT_CHAR_HOOK,confirm);
++                diameter->Bind(wxEVT_KILL_FOCUS,[commit](wxFocusEvent& e){commit();e.Skip();});
++                type->Bind(wxEVT_CHOICE,[commit](wxCommandEvent&){commit();});
++            }
++            wxGetApp().UpdateDarkUIWin(rows_panel);
++            // The panel is inserted before its dynamic tool rows exist. Refresh
++            // its minimum height so the following section cannot cover rows.
++            rows_panel->SetMinSize(grid->CalcMin());
++            panel->SetMinSize(panel->GetSizer()->CalcMin());
++            for(wxWindow* ancestor=panel;ancestor;ancestor=ancestor->GetParent()){
++                ancestor->InvalidateBestSize();ancestor->Layout();
++            }
++        }
++        for(size_t t=0;t<rows->size();++t){
++            auto& row=rows->at(t);auto* focus=wxWindow::FindFocus();
++            if(focus!=row.diameter && (!focus || !row.diameter->IsDescendant(focus)))row.diameter->SetValue(tools[t].at("diameter").get<double>());
++            const auto kind=tools[t].at("type").get<std::string>();
++            // Do not reset the native choice while its dropdown is open.
++            if(row.displayed_type!=kind){row.type->SetSelection(kind=="cht"?1:0);row.displayed_type=kind;}
++            row.diameter->Enable(editing && enabled);row.type->Enable(editing && enabled);
++        }
++        status->SetLabel(editing?_L("Manuale: ugelli del profilo Orca"):_L("Automatico: ugelli da KlipperScreen"));
++    });
++    wxGetApp().UpdateDarkUIWin(panel);return panel;
++}
 +wxWindow* create_indx_mapping_controls(wxWindow* parent) {
 +    auto* panel=new wxPanel(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
 +    row->Add(new wxStaticText(panel,wxID_ANY,_L("Mappatura")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,8);
@@ -1766,7 +1912,7 @@ index 00000000..ebd6bbea
 +        if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
 +        const auto remote=read_printer(host_url());
 +        const auto declared=Indx::confirmed_tools(remote);
-+        if(!declared.empty()) {
++        if(!manual_indx_nozzles() && !declared.empty()) {
 +            apply_nozzle_setup(declared);
 +            wxString summary=_L("Numero, diametri e tipo ugello vengono importati automaticamente da KlipperScreen. Per modificarli usa I miei filamenti > Conferma ugelli montati sulla stampante.\n\n");
 +            for(const auto& n:declared)summary+=wxString::Format("T%d: %.2f mm %s\n",n.at("tool").get<int>(),n.at("diameter").get<double>(),n.at("type")=="cht"?"CHT":"Standard");
@@ -2510,10 +2656,10 @@ index 00000000..ebd6bbea
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
 new file mode 100644
-index 00000000..9ad6efd4
+index 00000000..9c7ac58d
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.hpp
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,20 @@
 +#pragma once
 +#include <string>
 +#include <nlohmann/json.hpp>
@@ -2527,6 +2673,7 @@ index 00000000..9ad6efd4
 +bool configure_indx_connection(wxWindow* parent);
 +void configure_indx_nozzles(wxWindow* parent);
 +bool is_indx_profile();
++wxWindow* create_indx_nozzle_controls(wxWindow* parent);
 +wxWindow* create_indx_mapping_controls(wxWindow* parent);
 +wxWindow* create_indx_tool_selector(wxWindow* parent,wxWindow* filament_control,int filament_index);
 +void refresh_indx_preflight(const Print& print);
@@ -2557,7 +2704,7 @@ index ae0c0c46..fbbd6660 100644
                                                   filament_type);
                  return false;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 6e4d3e34..5d1692de 100644
+index 6e4d3e34..c7d799b7 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -1,3 +1,5 @@
@@ -2566,7 +2713,51 @@ index 6e4d3e34..5d1692de 100644
  #include "Plater.hpp"
  #include "../Utils/NetworkAgent.hpp"
  #include "IPrinterAgent.hpp"
-@@ -3279,7 +3281,11 @@ Sidebar::Sidebar(Plater *parent)
+@@ -904,6 +906,7 @@ struct Sidebar::priv
+     ExtruderGroup *left_extruder = nullptr;
+     ExtruderGroup *right_extruder = nullptr;
+     ExtruderGroup *single_extruder = nullptr;
++    wxWindow* indx_nozzles = nullptr;
+ 
+     int  FromDIP(int n) { return plater->FromDIP(n); }
+     void layout_printer(bool isBBL, bool isDual);
+@@ -1087,6 +1090,7 @@ void Sidebar::priv::layout_printer(bool isBBL, bool isDual)
+         wxBoxSizer * extruder_sizer = new wxBoxSizer(wxVERTICAL);
+         extruder_sizer->Add(extruder_dual_sizer  , 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(SidebarProps::ContentMargin()));
+         extruder_sizer->Add(extruder_single_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(SidebarProps::ContentMargin()));
++        extruder_sizer->Add(indx_nozzles, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(SidebarProps::ContentMargin()));
+ 
+         vsizer_printer->Add(extruder_sizer, 1, wxEXPAND | wxTOP, FromDIP(2));
+ 
+@@ -1105,7 +1109,9 @@ void Sidebar::priv::layout_printer(bool isBBL, bool isDual)
+     // ref: https://github.com/OrcaSlicer/OrcaSlicer/pull/11610#discussion_r2607411847
+     panel_printer_bed->Show(preset_bundle.is_bbl_vendor() || cfg.opt_bool("support_multi_bed_types"));
+ 
+-    extruder_dual_sizer->Show(isDual);
++    const bool indx = is_indx_profile();
++    indx_nozzles->Show(indx);
++    extruder_dual_sizer->Show(isDual && !indx);
+ 
+     // NEEDFIX requires AMS check or any type of ???
+     // Single nozzle & non ams
+@@ -1121,7 +1127,7 @@ void Sidebar::priv::layout_printer(bool isBBL, bool isDual)
+         // The variant box switches the machine variant. The card below lists the nozzles when there
+         // are flow variants to choose or several extruders to show; otherwise the box says it all.
+         panel_nozzle_dia->Show(true);
+-        extruder_single_sizer->Show(has_flow_variant || multi_extruder_rows);
++        extruder_single_sizer->Show(!indx && (has_flow_variant || multi_extruder_rows));
+         single_extruder->SetNozzleRowCount(multi_extruder_rows ? size_t(extruder_count) : 1);
+     } else {
+         panel_nozzle_dia->Show(false);
+@@ -3199,6 +3205,7 @@ Sidebar::Sidebar(Plater *parent)
+         p->left_extruder  = new ExtruderGroup(p->m_panel_printer_content, 0, _L("Left Nozzle"));
+         p->right_extruder = new ExtruderGroup(p->m_panel_printer_content, 1, _L("Right Nozzle"));
+         p->single_extruder = new ExtruderGroup(p->m_panel_printer_content, -1, _L("Nozzle"));
++        p->indx_nozzles = create_indx_nozzle_controls(p->m_panel_printer_content);
+         // manuallySetNozzleCount refreshes the badge and the plater itself; it is a no-op unless the
+         // printer has a multi-nozzle extruder (and the edit button is only enabled then, see
+         // enable_nozzle_count_edit).
+@@ -3279,7 +3286,11 @@ Sidebar::Sidebar(Plater *parent)
      bSizer39->Add(p->m_staticText_filament_count, 0, wxALIGN_CENTER );
      bSizer39->Add(FromDIP(10), 0, 0, 0, 0);
  
@@ -2579,7 +2770,27 @@ index 6e4d3e34..5d1692de 100644
      p->m_panel_filament_title->Layout();
      scrolled_sizer->Add(p->m_panel_filament_title, 0, wxEXPAND | wxALL, 0);
      // ORCA add bottom border for seperation wile sections folded
-@@ -3359,6 +3365,16 @@ Sidebar::Sidebar(Plater *parent)
+@@ -3347,6 +3358,19 @@ Sidebar::Sidebar(Plater *parent)
+     bSizer39->Add(add_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::IconSpacing())); // ORCA Moved add button after delete button to prevent add button position change when remove icon automatically hidden
+ 
+     bSizer39->Hide(p->m_bpButton_del_filament); // ORCA Ensure button is hidden on launch while 1 filament exist
++    // INDX tool count and project filament count are independent. Keep direct
++    // buttons even though the native multi-extruder header hides its SEMM icons.
++    for(int delta : {-1,1}){
++        auto* button=new wxButton(p->m_panel_filament_title,wxID_ANY,delta<0?"-":"+",wxDefaultPosition,FromDIP(wxSize(28,-1)),wxBU_EXACTFIT);
++        button->SetToolTip(delta<0?_L("Remove last filament"):_L("Add one filament"));
++        bSizer39->Add(button,0,wxALIGN_CENTER_VERTICAL|wxLEFT,FromDIP(4));
++        button->Bind(wxEVT_BUTTON,[this,delta](wxCommandEvent&){if(delta<0)delete_filament();else add_filament();update_filaments_counter();});
++        button->Bind(wxEVT_UPDATE_UI,[this,button,delta](wxUpdateUIEvent& e){
++            const bool visible=is_indx_profile();if(button->IsShown()!=visible){button->Show(visible);button->GetParent()->Layout();}
++            const auto count=wxGetApp().preset_bundle->filament_presets.size();
++            e.Enable(visible && !p->plater->is_background_process_slicing() && (delta<0?count>1:count<size_t(MAXIMUM_EXTRUDER_NUMBER)));
++        });
++    }
+ 
+     ams_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "ams_fila_sync", wxEmptyString, wxDefaultSize, wxDefaultPosition,
+                                                  wxBU_EXACTFIT | wxNO_BORDER, false, 16); // ORCA match icon size with other icons as 16x16
+@@ -3359,6 +3383,16 @@ Sidebar::Sidebar(Plater *parent)
      p->m_bpButton_ams_filament = ams_btn;
  
      bSizer39->Add(ams_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
@@ -2596,7 +2807,7 @@ index 6e4d3e34..5d1692de 100644
      //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
  
      ScalableButton* set_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "settings");
-@@ -3748,7 +3764,10 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
+@@ -3748,7 +3782,10 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
      auto side = filament_idx % 2;
      auto /***/sizer_filaments = this->p->sizer_filaments->GetItem(side)->GetSizer();
      if (side == 1 && filament_idx > 1) sizer_filaments->Remove(filament_idx / 2);
@@ -2608,7 +2819,7 @@ index 6e4d3e34..5d1692de 100644
      if (side == 0 && filament_idx > 0) {
          sizer_filaments = this->p->sizer_filaments->GetItem(1)->GetSizer();
          sizer_filaments->AddStretchSpacer(1);
-@@ -11364,6 +11383,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
+@@ -11364,6 +11401,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
      else
          invalidated = background_process.apply(this->model, preset_bundle->full_config(false));
  
@@ -2628,7 +2839,7 @@ index 6e4d3e34..5d1692de 100644
      if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))
          // BBS: add only gcode mode
          q->set_only_gcode(false);
-@@ -13859,6 +13891,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
+@@ -13859,6 +13909,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
  
  void Plater::priv::on_action_send_to_printer(bool isall)
  {
@@ -2640,7 +2851,7 @@ index 6e4d3e34..5d1692de 100644
  	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
      if (isall) {
          m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
-@@ -20890,6 +20927,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
+@@ -20890,6 +20945,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
  }
  void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
  {
@@ -2651,7 +2862,7 @@ index 6e4d3e34..5d1692de 100644
      // if physical_printer is selected, send gcode for this printer
      // DynamicPrintConfig* physical_printer_config = wxGetApp().preset_bundle->physical_printers.get_selected_printer_config();
      DynamicPrintConfig* physical_printer_config = &Slic3r::GUI::wxGetApp().preset_bundle->printers.get_edited_preset().config;
-@@ -20899,6 +20940,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -20899,6 +20958,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
      PrintHostJob upload_job(physical_printer_config);
      if (upload_job.empty())
          return;

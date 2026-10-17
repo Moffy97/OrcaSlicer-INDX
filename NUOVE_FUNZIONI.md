@@ -128,3 +128,7 @@ Il colore predefinito riscritto dall’importazione 3MF non genera un falso conf
 ## 17 ottobre — mappatura nella pagina principale
 
 Automatico / Manuale accanto a INDX, selettore Tool sotto ogni filamento, rispetto della mappa manuale in Auto slice. [Verifica con il filamento 2](PROVA_MAPPATURA_TOOL.md). Sezione del risultato scelto e panoramica Mainsail documentate nella guida completa.
+
+## Ugelli direttamente nella pagina principale
+
+[Automatico / Manuale per diametro e Standard/CHT](UGELLI_MANUALI_AUTOMATICI.md). Scelta separata dalla mappatura dei filamenti; in Manuale gli ugelli locali non vengono sostituiti dal polling.
