@@ -22,7 +22,7 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..ed5c9f3e
+index 00000000..a0295c77
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
 @@ -0,0 +1,47 @@
@@ -58,7 +58,7 @@ index 00000000..ed5c9f3e
 +The role proposal uses the current filament/tool mapping and same-material candidate nozzles. Detail uses the finest associated nozzle up to 0.4 mm for walls and solid surfaces; balanced uses the largest up to 0.6 mm (or the smallest available fallback); speed uses the largest for walls, solids and sparse infill. Sparse infill uses the largest associated nozzle in every mode. Supports and painting remain explicit. Local feature overrides must be resolved before applying a global proposal. Preview movement properties show project tool/nozzle and the exact count of base Z intervals matching the deposited thickness, with no assumption of constant layer height. The manual commissioning checklist invalidates dependent steps after a failed prerequisite or changed hardware; it does not set Klipper movement gates.
 +
 +
-+The INDX workspace uses direct selection buttons and a single content area in both applications. Orca reuses the selected physical printer host, the printer profile host/web UI address, or the migrated legacy host. It has no duplicate connection editor in the workspace. The three pages are Info INDX, Config tool and Auto slicing optimization. Hardware updates in place on Config tool, which also keeps explicit filament synchronization available. Optimization owns mode selection, native reslice, progress and print statistics. Mode changes and invalidated results clear displayed metrics. Reapplying unchanged settings avoids duplicate process presets; generated names depend on settings rather than predecessor names, and edited presets are not overwritten. Native slicing validation and notifications remain active. The workspace does not switch the main view or initiate printing. Local edits to generated profiles still require review before replacement.
++The INDX workspace uses direct selection buttons and a single content area in both applications. Orca reuses the selected physical printer host, the printer profile host/web UI address, or the migrated legacy host. It has no duplicate connection editor in the workspace. The three pages are Info INDX, Config tool and Auto slicing optimization. Hardware updates in place on Config tool, which also keeps explicit filament synchronization available. Optimization owns mode selection, native reslice, progress and print statistics. Selecting a different mode automatically applies and slices it; selecting an uncomputed mode also starts slicing. The shared action disables controls immediately during a pending run, and a Recalculate button allows retries without changing modes. Mode changes and invalidated results clear displayed metrics. Reapplying unchanged settings avoids duplicate process presets; generated names depend on settings rather than predecessor names, and edited presets are not overwritten. Native slicing validation and notifications remain active. The workspace does not switch the main view or initiate printing. Local edits to generated profiles still require review before replacement.
 +
 +KlipperScreen owns the machine editor. Incomplete coordinates may be saved as a draft. Applying requires a fresh idle snapshot, heaters off, complete bounded geometry and an unchanged file fingerprint. Only the INDX user configuration is edited; core tool-change macros are preserved. The editor generates missing Tn shortcuts and a revision-guarded delayed SAVE_VARIABLE block for offsets. That block runs once for a new revision, preserving later official calibration results. Every geometry save backs up files and invalidates previous commissioning. A maintenance installation can use an explicitly registered inactive reference profile for limits; it does not activate that profile.
 +
@@ -463,10 +463,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..76d29e76
+index 00000000..b3294472
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1059 @@
+@@ -0,0 +1,1064 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -1396,8 +1396,6 @@ index 00000000..76d29e76
 +    info_text->Wrap(860);info_layout->Add(info_text,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* status=new wxStaticText(info,wxID_ANY,wxEmptyString);status->Wrap(860);
 +    info_layout->Add(status,0,wxEXPAND|wxALL,20);
-+    auto* go=new wxButton(info,wxID_ANY,_L("Scegli come stampare"),wxDefaultPosition,wxSize(250,44));info_layout->Add(go,0,wxALL,20);
-+    go->Bind(wxEVT_BUTTON,[book,tabs](wxCommandEvent&){book->SetSelection(2);for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==2);});
 +    info->SetSizer(info_layout);
 +    auto* machine_layout=new wxBoxSizer(wxVERTICAL);
 +    machine_layout->Add(heading(machine,_L("Tool della stampante")),0,wxALL,20);
@@ -1428,9 +1426,9 @@ index 00000000..76d29e76
 +    }
 +    (*mode_buttons)[1]->SetValue(true);opt_layout->Add(modes,0,wxEXPAND|wxLEFT|wxRIGHT,14);
 +    auto* actions=new wxBoxSizer(wxHORIZONTAL);
-+    auto* slice=new wxButton(optimization,wxID_ANY,_L("Applica e slice"),wxDefaultPosition,wxSize(220,46));
++    auto* slice=new wxButton(optimization,wxID_ANY,_L("Ricalcola"),wxDefaultPosition,wxSize(220,46));
 +    actions->Add(slice,0,wxRIGHT,16);
-+    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita, poi avvia lo slicing qui."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
++    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita: lo slicing parte automaticamente."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
 +    opt_layout->Add(actions,0,wxEXPAND|wxALL,20);
 +    auto* progress=new wxGauge(optimization,wxID_ANY,100,wxDefaultPosition,wxSize(-1,6));opt_layout->Add(progress,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* metrics=new wxStaticText(optimization,wxID_ANY,_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));
@@ -1443,10 +1441,6 @@ index 00000000..76d29e76
 +    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
 +    struct SliceState {bool pending=false;bool seen_running=false;bool displayed=false;int plate=-1;int mode=-1;int idle_ticks=0;};
 +    auto state=std::make_shared<SliceState>();
-+    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,clear_metrics,progress_text,report](wxCommandEvent&){
-+        *selection=i;for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==i);
-+        if(state->mode!=i){clear_metrics();report->SetValue(_L("La nuova modalita non e ancora applicata. Assegnazioni e risultati saranno aggiornati insieme allo slicing."));progress_text->SetLabel(_L("Modalita cambiata. Premi Applica e slice per aggiornare i risultati."));state->displayed=false;}
-+    });
 +    auto painted=std::make_shared<std::string>();
 +    auto refresh=[status,tools,painted]() {
 +        try {
@@ -1480,9 +1474,9 @@ index 00000000..76d29e76
 +            auto remote=task.get();progress.Update(100);wxGetApp().app_config->set("indx_printer_snapshot",remote.dump());refresh();
 +        }catch(const std::exception& e){status->SetLabel(wxString::FromUTF8(e.what()));}
 +    });
-+    slice->Bind(wxEVT_BUTTON,[dialog,report,selection,state,clear_metrics,progress_text](wxCommandEvent&){
++    auto run_slice=[dialog,report,selection,state,clear_metrics,progress_text,mode_buttons,slice](){
 +        auto* p=wxGetApp().plater();
-+        if(p->is_background_process_slicing() || p->is_export_gcode_scheduled()){progress_text->SetLabel(_L("Attendi la fine dello slicing o dell'esportazione in corso."));return;}
++        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){progress_text->SetLabel(_L("Attendi la fine dello slicing o dell'esportazione in corso."));return;}
 +        auto* plate=p->get_partplate_list().get_curr_plate();
 +        clear_metrics();report->Clear();state->displayed=false;
 +        if(!plate || !plate->has_printable_instances()){progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
@@ -1491,9 +1485,20 @@ index 00000000..76d29e76
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
 +        state->plate=plate->get_index();state->mode=*selection;state->pending=true;state->seen_running=false;state->idle_ticks=0;
++        slice->Disable();for(auto* button:*mode_buttons)button->Disable();
 +        progress_text->SetLabel(_L("Preparazione dello slicing..."));
 +        // Reuse Orca's native validation and background worker without switching views.
 +        p->reslice();
++    };
++    slice->Bind(wxEVT_BUTTON,[run_slice](wxCommandEvent&){run_slice();});
++    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice](wxCommandEvent&){
++        auto* p=wxGetApp().plater();
++        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
++            for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==*selection);return;
++        }
++        const bool changed=*selection!=i;
++        *selection=i;for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==i);
++        if(changed || state->mode!=i || !state->displayed)run_slice();
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
 +    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,progress,progress_text,metrics,clear_metrics](wxTimerEvent&) {
@@ -1502,7 +1507,7 @@ index 00000000..76d29e76
 +        slice->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
 +        if(!state->pending){
 +            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
-+                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Premi Applica e slice per aggiornare i risultati."));
++                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Scegli una modalita o premi Ricalcola."));
 +            }
 +            return;
 +        }
@@ -1665,13 +1670,101 @@ index 6e4d3e34..52ddce97 100644
      // Orca: the use_3mf printer option makes us send a .gcode.3mf to the printer
      const auto* use_3mf_opt = physical_printer_config->option<ConfigOptionBool>("use_3mf");
 diff --git a/tests/fff_print/test_fill.cpp b/tests/fff_print/test_fill.cpp
-index 1fbedcda..42c074aa 100644
+index 1fbedcda..37354317 100644
 --- a/tests/fff_print/test_fill.cpp
 +++ b/tests/fff_print/test_fill.cpp
-@@ -51,6 +51,120 @@
+@@ -43,6 +43,8 @@
+ #include "libslic3r/IntersectionPoints.hpp"
+ #include "libslic3r/Layer.hpp"
+ #include "libslic3r/Print.hpp"
++#include "libslic3r/IndxChecks.hpp"
++#include "libslic3r/GCode/GCodeProcessor.hpp"
+ #include "libslic3r/PrintConfig.hpp"
+ #include "libslic3r/SVG.hpp"
+ #include "libslic3r/libslic3r.h"
+@@ -51,6 +53,199 @@
  
  using namespace Slic3r;
  
++TEST_CASE("INDX role proposals export bounded paths across nozzle layouts and print modes", "[Fill][INDX][IndxSimulation]")
++{
++    const int layout=GENERATE(0,1,2,3,4);
++    const std::string style=GENERATE("detail","balanced","speed");
++    const double requested=GENERATE(.1,.4);
++    const bool thin=GENERATE(false,true);
++    const std::vector<std::vector<double>> layouts={{.6,.4,.6,.8},{.2,.4,.6,.8,1.0},{.4},{.2,.8},{.2,.4,.4,.6,.6,.8,1.0,1.2}};
++    const auto& diameters=layouts[layout];
++    nlohmann::json tools=nlohmann::json::array();
++    std::vector<int> maps;std::vector<double> limits;
++    for(size_t i=0;i<diameters.size();++i){
++        tools.push_back({{"filament",i+1},{"tool",i},{"diameter",diameters[i]},{"material","PLA"}});
++        maps.push_back(int(i+1));limits.push_back(.7*diameters[i]);
++    }
++    const auto roles=Indx::propose_roles(tools,style,tools);
++    const int wall=roles.at("wall").at("filament").get<int>(),infill=roles.at("infill").at("filament").get<int>();
++    const double wall_nozzle=diameters[wall-1],infill_nozzle=diameters[infill-1];
++    auto config=Test::multifilament_config(unsigned(diameters.size()));
++    config.set_num_extruders(unsigned(diameters.size()));
++    config.set_key_value("machine_start_gcode",new ConfigOptionString("INDX_PRINT_START TOOL=0"));
++    config.set_key_value("nozzle_diameter",new ConfigOptionFloats(diameters));
++    config.set_key_value("max_layer_height",new ConfigOptionFloats(limits));
++    config.set_key_value("filament_map",new ConfigOptionInts(maps));
++    config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    config.set_key_value("single_extruder_multi_material",new ConfigOptionBool(false));
++    config.set_key_value("enable_support",new ConfigOptionBool(false));
++    config.set_key_value("enable_prime_tower",new ConfigOptionBool(false));
++    config.set_key_value("infill_combination",new ConfigOptionBool(true));
++    config.set_key_value("infill_combination_max_layer_height",new ConfigOptionFloatOrPercent(100.,true));
++    config.set_key_value("sparse_infill_density",new ConfigOptionPercent(20));
++    config.set_key_value("sparse_infill_pattern",new ConfigOptionEnum<InfillPattern>(ipRectilinear));
++    for(const char* key:{"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id"})
++        config.set_key_value(key,new ConfigOptionInt(wall));
++    config.set_key_value("sparse_infill_filament_id",new ConfigOptionInt(infill));
++    Test::size_flush_to_nozzles(config);
++    Print print;Model model;
++    Test::init_print({make_cube(20.,thin?2.:20.,8.)},print,model,config);
++    const double cap=print.indx_layer_height_limit();
++    REQUIRE_THAT(cap,Catch::Matchers::WithinAbs(.7*std::min(wall_nozzle,infill_nozzle),1e-6));
++    // Apply the same min(requested, used-tool cap) rule as the GUI, then inspect
++    // the exported G-code through the processor that feeds Orca's preview.
++    const double height=std::min(requested,cap);
++    config.set_key_value("layer_height",new ConfigOptionFloat(height));
++    config.set_key_value("initial_layer_print_height",new ConfigOptionFloat(height));
++    print.apply(model,config);
++    GCodeProcessorResult result;
++    const auto gcode=Test::gcode(print,&result);
++    REQUIRE_FALSE(gcode.empty());
++    double max_wall=0.,max_infill=0.;bool bounded=true,correct_tools=true;
++    for(const auto& move:result.moves){
++        if(move.type!=EMoveType::Extrude)continue;
++        if(move.extrusion_role==erPerimeter || move.extrusion_role==erExternalPerimeter){
++            max_wall=std::max(max_wall,double(move.height));
++            bounded=bounded && move.height>0. && move.height<=height+1e-5;
++            correct_tools=correct_tools && move.extruder_id==wall-1;
++        }else if(move.extrusion_role==erInternalInfill){
++            max_infill=std::max(max_infill,double(move.height));
++            bounded=bounded && move.height>0. && move.height<=.7*infill_nozzle+1e-5;
++            correct_tools=correct_tools && move.extruder_id==infill-1;
++        }
++    }
++    CAPTURE(layout,style,requested,thin,wall_nozzle,infill_nozzle,height,max_wall,max_infill);
++    CHECK(bounded);CHECK(correct_tools);CHECK(max_wall>0.);
++    CHECK_THAT(max_wall,Catch::Matchers::WithinAbs(height,1e-5));
++    const auto& layers=print.objects().front()->layers();
++    REQUIRE_FALSE(layers.empty());
++    CHECK_THAT(layers.back()->print_z,Catch::Matchers::WithinAbs(8.,height+1e-5));
++    bool aligned=true;size_t combined=0;
++    for(size_t i=0;i<layers.size();++i)for(const auto* region:layers[i]->regions())for(const auto& surface:region->fill_surfaces.surfaces){
++        if(surface.surface_type!=stInternal || surface.thickness_layers<=1)continue;
++        REQUIRE(i+1>=surface.thickness_layers);
++        double accumulated=0.;for(size_t k=i+1-surface.thickness_layers;k<=i;++k)accumulated+=layers[k]->height;
++        aligned=aligned && std::abs(surface.thickness-accumulated)<1e-5;
++        ++combined;
++    }
++    CHECK(aligned);
++    if(!thin){CHECK(max_infill>0.);if(.7*infill_nozzle>=2.*height+1e-5)CHECK(combined>0);}
++}
++
 +TEST_CASE("INDX combined infill fills the accumulated wall height with its own nozzle limit", "[Fill][INDX][CombinedInfill]")
 +{
 +    const double cap=GENERATE(.35,.56,.65);

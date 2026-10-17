@@ -71,3 +71,13 @@ Cambio modalita: metriche nascoste fino al nuovo slicing. Ricalcolo Veloce ripet
 ![Modalita, slicing e risultati nella stessa pagina](indx-auto-slice-workspace.png)
 
 Dettaglio verificato nello stesso pannello: pareti e superfici T1 da 0,4, infill T3 da 0,8; stima 1h 58m 2s, 41,4 g, 242 cambi.
+
+## Cambio modalita con slicing automatico
+
+Selezionando Dettaglio, Equilibrato o Veloce viene applicata la proposta e avviato automaticamente lo slicing nella stessa pagina. Il comando Ricalcola permette di ripetere la modalita corrente. I controlli vengono disabilitati subito durante il calcolo. Rimosso il pulsante duplicato Scegli come stampare dalla home.
+
+Prova GUI: Veloce > Equilibrato completati premendo soltanto la modalita, senza Ricalcola. Metriche precedenti cancellate durante il calcolo e aggiornate alla fine; home senza pulsante duplicato. Build Release e 275 asserzioni IndxChecks passate.
+
+## Matrice aggiuntiva di 60 slicing
+
+967 asserzioni passate sui G-code esportati; regressioni 467/38 passate. [Report completo e risultati misurati](SIMULAZIONI_AUTO_INDX.md).
