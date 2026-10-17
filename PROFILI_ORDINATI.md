@@ -18,4 +18,3 @@ I confronti automatici riusano varianti Dettaglio, Equilibrato e Veloce **nel pr
 Le vecchie copie con nomi a codice sono archiviate con backup. Restano i processi personali precedenti e una copia nominata Progetto attuale che conserva i parametri del lavoro aperto. Profili delle altre stampanti, filamenti e calibrazioni personali non vengono rimossi.
 
 
-![Profili per ugello e layer nel menu Processo](orca-profili-ugello-layer.png)

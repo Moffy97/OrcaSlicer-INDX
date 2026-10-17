@@ -9,19 +9,13 @@
 
 Se si avvia una calibrazione da uno standard, al salvataggio del risultato viene creata una copia personalizzata. I risultati rimangono specifici per filamento, tool, diametro e tipo di ugello. La sola scelta standard non rende verificati PA, flow o portata.
 
-![Filamenti sul touch con dati di prova](studio-indx_filaments.png)
-
 ## In Orca
 
 **INDX → Config tool → Colore del tool** mostra un campione senza codice o nome del colore: selezionare Tn e toccare il campione per aprire la palette nativa. Il colore del progetto e il profilo scelto per il tool si sincronizzano automaticamente anche verso KlipperScreen. Una base Orca crea una copia standard senza test; un profilo INDX richiama il filamento personale e le calibrazioni applicabili.
 
-![Campione colore in Orca](orca-colore-tool.png)
-
 Con Orca aperto e collegato, i profili assegnati dalla stampante aggiornano automaticamente i relativi slot del progetto: colore, temperature, valori di base e risultati di calibrazione ancora validi. La lettura avviene normalmente ogni 15 secondi, oltre ai tempi di rete. Slicing/esportazione, profili non salvati e finestre modali rimandano l'applicazione. Le copie generate modificate localmente richiedono confronto con **Sincronizza filamenti nel progetto**, invece di essere sovrascritte.
 
 Le assegnazioni dei tool occupano i primi slot corrispondenti; eventuali slot aggiuntivi non assegnati dalla stampante vengono conservati. Il progetto aggiornato richiede un nuovo slicing prima della stampa: un G-code già esportato non viene modificato o inviato automaticamente. Le selezioni fatte in Orca vengono inviate con lo stato precedente atteso. Modifiche contemporanee al medesimo tool vengono segnalate senza sovrascriverle: usare il confronto esplicito per risolvere. Le risposte vecchie non sostituiscono una selezione effettuata mentre la rete lavorava.
-
-![Prova di aggiornamento automatico, dati simulati](sync-filamenti-automatico.png)
 
 ## Verifiche
 

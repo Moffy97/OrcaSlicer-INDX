@@ -764,10 +764,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..abfcf5a4
+index 00000000..07df82bb
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1886 @@
+@@ -0,0 +1,1938 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -1577,15 +1577,46 @@ index 00000000..abfcf5a4
 +    return adapt_layer_heights(print);
 +}
 +bool is_indx_profile() {return is_indx_printer();}
++namespace {
++// A small shared surface for sidebar controls; use the current Orca theme at
++// paint time so changing appearance does not leave light cards in a dark UI.
++class IndxSidebarCard final : public wxPanel {
++public:
++    explicit IndxSidebarCard(wxWindow* parent) : wxPanel(parent) {
++        SetBackgroundStyle(wxBG_STYLE_PAINT);
++        Bind(wxEVT_PAINT,[this](wxPaintEvent&){
++            wxAutoBufferedPaintDC dc(this);
++            const bool dark=wxGetApp().dark_mode();
++            dc.SetBackground(wxBrush(GetParent()->GetBackgroundColour()));dc.Clear();
++            dc.SetBrush(wxBrush(dark?wxColour(43,48,51):wxColour(246,249,249)));
++            dc.SetPen(wxPen(dark?wxColour(66,76,79):wxColour(217,228,228)));
++            auto rect=GetClientRect();rect.Deflate(1);
++            dc.DrawRoundedRectangle(rect,FromDIP(7));
++        });
++    }
++};
++void style_indx_mode(wxToggleButton* button,bool selected) {
++    const bool dark=wxGetApp().dark_mode();
++    const wxColour bg=selected?wxColour(24,119,105):(dark?wxColour(50,56,59):wxColour(235,241,241));
++    const wxColour fg=selected?wxColour(255,255,255):(dark?wxColour(226,235,235):wxColour(53,73,77));
++    if(button->GetBackgroundColour()!=bg || button->GetForegroundColour()!=fg){
++        button->SetBackgroundColour(bg);button->SetForegroundColour(fg);button->Refresh();
++    }
++}
++}
 +wxWindow* create_indx_nozzle_controls(wxWindow* parent) {
 +    auto* panel=new wxPanel(parent);auto* box=new wxBoxSizer(wxVERTICAL);
 +    auto* header=new wxBoxSizer(wxHORIZONTAL);
-+    header->Add(new wxStaticText(panel,wxID_ANY,_L("Ugelli")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,6);
++    auto* title=new wxStaticText(panel,wxID_ANY,_L("Ugelli"));
++    auto title_font=title->GetFont();title_font.SetWeight(wxFONTWEIGHT_BOLD);title->SetFont(title_font);
++    header->Add(title,1,wxALIGN_CENTER_VERTICAL);
 +    auto* automatic=new wxToggleButton(panel,wxID_ANY,_L("Automatico"));
 +    auto* manual=new wxToggleButton(panel,wxID_ANY,_L("Manuale"));
-+    header->Add(automatic,1,wxRIGHT,6);header->Add(manual,1);
-+    auto* remove=new wxButton(panel,wxID_ANY,"-",wxDefaultPosition,wxSize(26,-1),wxBU_EXACTFIT);
-+    auto* add=new wxButton(panel,wxID_ANY,"+",wxDefaultPosition,wxSize(26,-1),wxBU_EXACTFIT);
++    auto* modes=new wxBoxSizer(wxHORIZONTAL);
++    automatic->SetMinSize(panel->FromDIP(wxSize(-1,30)));manual->SetMinSize(panel->FromDIP(wxSize(-1,30)));
++    modes->Add(automatic,1,wxRIGHT,panel->FromDIP(6));modes->Add(manual,1);
++    auto* remove=new wxButton(panel,wxID_ANY,"-",wxDefaultPosition,panel->FromDIP(wxSize(30,28)),wxBU_EXACTFIT);
++    auto* add=new wxButton(panel,wxID_ANY,"+",wxDefaultPosition,panel->FromDIP(wxSize(30,28)),wxBU_EXACTFIT);
 +    header->Add(remove,0,wxLEFT,4);header->Add(add,0,wxLEFT,4);
 +    remove->SetToolTip(_L("Rimuovi l'ultimo ugello dal profilo Orca. Le sue assegnazioni del piatto corrente tornano a T0. Non rimuove il filamento."));
 +    add->SetToolTip(_L("Aggiungi un ugello al profilo Orca (0,4 mm Standard). Non modifica il firmware o il montaggio sul touch."));
@@ -1600,11 +1631,13 @@ index 00000000..abfcf5a4
 +        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,panel);}
 +    };
 +    add->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(1);});remove->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(-1);});
-+    box->Add(header,0,wxEXPAND|wxBOTTOM,4);
-+    auto* rows_panel=new wxPanel(panel);auto* grid=new wxFlexGridSizer(2,4,6);
++    box->Add(header,0,wxEXPAND|wxBOTTOM,panel->FromDIP(7));
++    box->Add(modes,0,wxEXPAND|wxBOTTOM,panel->FromDIP(8));
++    auto* rows_panel=new wxPanel(panel);auto* grid=new wxFlexGridSizer(2,panel->FromDIP(8),panel->FromDIP(8));
 +    grid->AddGrowableCol(0);grid->AddGrowableCol(1);rows_panel->SetSizer(grid);
 +    box->Add(rows_panel,0,wxEXPAND);
-+    auto* status=new wxStaticText(panel,wxID_ANY,_L("Automatico: ugelli da KlipperScreen"));box->Add(status,0,wxTOP,2);
++    auto* status=new wxStaticText(panel,wxID_ANY,_L("Automatico: ugelli da KlipperScreen"));status->SetFont(status->GetFont().Smaller());
++    box->Add(status,0,wxTOP|wxBOTTOM,panel->FromDIP(7));
 +    panel->SetSizerAndFit(box);
 +    automatic->SetToolTip(_L("Importa numero, diametri e Standard/CHT confermati su KlipperScreen. Senza dati recenti mantiene gli ultimi valori."));
 +    manual->SetToolTip(_L("Modifica gli ugelli di questo profilo Orca. Non cambia il montaggio dichiarato su KlipperScreen: prima di stampare i dati devono coincidere."));
@@ -1624,22 +1657,34 @@ index 00000000..abfcf5a4
 +    struct Row {wxSpinCtrlDouble* diameter;wxChoice* type;std::string displayed_type;};
 +    auto rows=std::make_shared<std::vector<Row>>();
 +    const wxWeakRef<wxWindow> weak=panel;
-+    panel->Bind(wxEVT_UPDATE_UI,[panel,automatic,manual,remove,add,rows_panel,grid,rows,status,weak](wxUpdateUIEvent&){
++    panel->Bind(wxEVT_UPDATE_UI,[panel,title,automatic,manual,remove,add,rows_panel,grid,rows,status,weak](wxUpdateUIEvent&){
 +        if(!is_indx_profile())return;
 +        const auto tools=nozzle_setup();const bool editing=manual_indx_nozzles();
 +        const bool enabled=!wxGetApp().plater()->is_background_process_slicing() && !foreground_sync;
 +        automatic->SetValue(!editing);manual->SetValue(editing);automatic->Enable(enabled);manual->Enable(enabled);
++        style_indx_mode(automatic,!editing);style_indx_mode(manual,editing);
++        const auto heading=wxString::Format(_L("Ugelli · %zu tool"),tools.size());
++        if(title->GetLabel()!=heading)title->SetLabel(heading);
 +        remove->Enable(editing && enabled && tools.size()>1);add->Enable(editing && enabled && tools.size()<size_t(MAXIMUM_EXTRUDER_NUMBER));
 +        if(rows->size()!=tools.size()){
 +            grid->Clear(true);rows->clear();
 +            for(size_t t=0;t<tools.size();++t){
-+                auto* cell=new wxPanel(rows_panel);auto* line=new wxBoxSizer(wxHORIZONTAL);
-+                line->Add(new wxStaticText(cell,wxID_ANY,wxString::Format("T%zu",t)),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,4);
-+                auto* diameter=new wxSpinCtrlDouble(cell,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(64,-1),wxSP_ARROW_KEYS|wxTE_PROCESS_ENTER,.1,2.,.4,.05);
++                auto* cell=new IndxSidebarCard(rows_panel);auto* content=new wxBoxSizer(wxVERTICAL);
++                auto* badge=new wxStaticText(cell,wxID_ANY,wxString::Format("T%zu",t));
++                auto badge_font=badge->GetFont();badge_font.SetWeight(wxFONTWEIGHT_BOLD);badge->SetFont(badge_font);
++                badge->SetForegroundColour(wxColour(24,119,105));
++                content->Add(badge,0,wxLEFT|wxRIGHT|wxTOP,cell->FromDIP(9));
++                auto* line=new wxBoxSizer(wxHORIZONTAL);
++                auto* diameter=new wxSpinCtrlDouble(cell,wxID_ANY,wxEmptyString,wxDefaultPosition,cell->FromDIP(wxSize(64,28)),wxSP_ARROW_KEYS|wxTE_PROCESS_ENTER,.1,2.,.4,.05);
 +                diameter->SetDigits(2);diameter->SetName(wxString::Format(_L("Diametro ugello T%zu (mm)"),t));
-+                auto* type=new wxChoice(cell,wxID_ANY,wxDefaultPosition,wxSize(88,-1));type->Append(_L("Standard"));type->Append("CHT");
++                auto* type=new wxChoice(cell,wxID_ANY,wxDefaultPosition,cell->FromDIP(wxSize(82,28)));type->Append(_L("Standard"));type->Append("CHT");
 +                type->SetName(wxString::Format(_L("Tipo ugello T%zu"),t));
-+                line->Add(diameter,1,wxRIGHT,4);line->Add(type,1);cell->SetSizerAndFit(line);grid->Add(cell,1,wxEXPAND);
++                diameter->SetToolTip(_L("Diametro reale dell'ugello in millimetri"));
++                line->Add(diameter,1,wxRIGHT,cell->FromDIP(4));
++                line->Add(new wxStaticText(cell,wxID_ANY,"mm"),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,cell->FromDIP(6));
++                line->Add(type,1);
++                content->Add(line,0,wxEXPAND|wxALL,cell->FromDIP(9));
++                cell->SetSizerAndFit(content);grid->Add(cell,1,wxEXPAND);
 +                rows->push_back({diameter,type,{}});
 +                auto queued=std::make_shared<bool>(false);
 +                auto commit=[weak,diameter,type,t,queued,rows](){
@@ -1690,13 +1735,17 @@ index 00000000..abfcf5a4
 +            if(row.displayed_type!=kind){row.type->SetSelection(kind=="cht"?1:0);row.displayed_type=kind;}
 +            row.diameter->Enable(editing && enabled);row.type->Enable(editing && enabled);
 +        }
-+        status->SetLabel(editing?_L("Manuale: ugelli del profilo Orca"):_L("Automatico: ugelli da KlipperScreen"));
++        const auto source=editing?_L("Modifiche locali al profilo Orca"):_L("Configurazione ricevuta da KlipperScreen");
++        if(status->GetLabel()!=source)status->SetLabel(source);
++        status->SetForegroundColour(wxGetApp().dark_mode()?wxColour(171,187,190):wxColour(91,113,117));
 +    });
 +    wxGetApp().UpdateDarkUIWin(panel);return panel;
 +}
 +wxWindow* create_indx_mapping_controls(wxWindow* parent) {
 +    auto* panel=new wxPanel(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
-+    row->Add(new wxStaticText(panel,wxID_ANY,_L("Mappatura")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,8);
++    auto* label=new wxStaticText(panel,wxID_ANY,_L("Tool"));
++    auto font=label->GetFont();font.SetWeight(wxFONTWEIGHT_BOLD);label->SetFont(font);
++    row->Add(label,0,wxALIGN_CENTER_VERTICAL|wxRIGHT,panel->FromDIP(8));
 +    auto* automatic=new wxToggleButton(panel,wxID_ANY,_L("Automatico"));auto* manual=new wxToggleButton(panel,wxID_ANY,_L("Manuale"));
 +    row->Add(automatic,1,wxRIGHT,5);row->Add(manual,1);panel->SetSizerAndFit(row);
 +    automatic->SetToolTip(_L("Associa gli slot ai tool disponibili. Materiale e colore restano separati nella scelta dei ruoli."));
@@ -1706,14 +1755,17 @@ index 00000000..abfcf5a4
 +    panel->Bind(wxEVT_UPDATE_UI,[panel,automatic,manual](wxUpdateUIEvent&){
 +        const bool visible=is_indx_profile();if(panel->IsShown()!=visible){panel->Show(visible);panel->GetParent()->Layout();}
 +        const bool selected=manual_indx_mapping(),busy=wxGetApp().plater()->is_background_process_slicing();
++        style_indx_mode(automatic,!selected);style_indx_mode(manual,selected);
 +        automatic->SetValue(!selected);manual->SetValue(selected);automatic->Enable(!busy);manual->Enable(!busy);
 +    });
 +    wxGetApp().UpdateDarkUIWin(panel);return panel;
 +}
 +wxWindow* create_indx_tool_selector(wxWindow* parent,wxWindow* filament_control,int filament_index) {
-+    auto* panel=new wxPanel(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
-+    row->Add(new wxStaticText(panel,wxID_ANY,_L_CONTEXT("Tool","INDX tool assignment")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,6);
-+    auto* choice=new wxChoice(panel,wxID_ANY,wxDefaultPosition,wxSize(132,-1));row->Add(choice,1);panel->SetSizerAndFit(row);
++    auto* panel=new IndxSidebarCard(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
++    auto* label=new wxStaticText(panel,wxID_ANY,_L_CONTEXT("Tool","INDX tool assignment"));
++    auto font=label->GetFont();font.SetWeight(wxFONTWEIGHT_BOLD);label->SetFont(font);
++    row->Add(label,0,wxALIGN_CENTER_VERTICAL|wxLEFT|wxRIGHT,panel->FromDIP(8));
++    auto* choice=new wxChoice(panel,wxID_ANY,wxDefaultPosition,panel->FromDIP(wxSize(120,28)));row->Add(choice,1,wxTOP|wxBOTTOM|wxRIGHT,panel->FromDIP(6));panel->SetSizerAndFit(row);
 +    choice->SetName(wxString::Format(_L("Tool del filamento %d"),filament_index+1));
 +    choice->SetToolTip(_L("T0 = prima testa, T1 = seconda testa. Il diametro proviene dalla configurazione INDX. Abilita Manuale per modificare."));
 +    const wxWeakRef<wxWindow> weak=panel;
@@ -2704,7 +2756,7 @@ index ae0c0c46..fbbd6660 100644
                                                   filament_type);
                  return false;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 6e4d3e34..c7d799b7 100644
+index 6e4d3e34..7b06c541 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -1,3 +1,5 @@
@@ -2764,7 +2816,7 @@ index 6e4d3e34..c7d799b7 100644
 -    p->m_panel_filament_title->SetSizer( bSizer39 );
 +    auto* filament_header=new wxBoxSizer(wxVERTICAL);
 +    filament_header->Add(bSizer39,0,wxEXPAND);
-+    auto* indx_actions=new wxWrapSizer(wxHORIZONTAL);
++    auto* indx_actions=new wxBoxSizer(wxVERTICAL);
 +    filament_header->Add(indx_actions,0,wxEXPAND|wxBOTTOM,FromDIP(4));
 +    p->m_panel_filament_title->SetSizer(filament_header);
      p->m_panel_filament_title->Layout();
@@ -2794,14 +2846,14 @@ index 6e4d3e34..c7d799b7 100644
      p->m_bpButton_ams_filament = ams_btn;
  
      bSizer39->Add(ams_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
-+    auto* indx_sync_btn = new wxButton(p->m_panel_filament_title, wxID_ANY, "INDX", wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
++    auto* indx_sync_btn = new wxButton(p->m_panel_filament_title, wxID_ANY, _L("INDX · Gestisci e ottimizza"), wxDefaultPosition, FromDIP(wxSize(-1,32)), wxBU_EXACTFIT);
 +    indx_sync_btn->SetToolTip(_L("Apri lo spazio INDX: stampante e tool, filamenti e calibrazioni, controlli del piatto."));
 +    indx_sync_btn->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){show_indx_workspace(this);});
 +    indx_sync_btn->Bind(wxEVT_UPDATE_UI,[](wxUpdateUIEvent& e){
 +        e.Enable(is_indx_profile());
 +    });
-+    indx_actions->Add(indx_sync_btn,0,wxALIGN_CENTER|wxLEFT,FromDIP(SidebarProps::WideSpacing()));
-+    indx_actions->Add(create_indx_mapping_controls(p->m_panel_filament_title),1,wxEXPAND|wxALL,FromDIP(4));
++    indx_actions->Add(create_indx_mapping_controls(p->m_panel_filament_title),0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,FromDIP(8));
++    indx_actions->Add(indx_sync_btn,0,wxEXPAND|wxALL,FromDIP(8));
 +    install_indx_profile_publisher(this);
 +
      //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );

@@ -53,7 +53,7 @@ In **Auto slicing optimization**, i selettori **Dettaglio, Equilibrato, Veloce**
 
 `indx-machine-backup-*` conserva i file geometrici precedenti; `indx-profile-backups` conserva profili e dati; `indx-screen-backup-*` conserva software e menu. Il rollback software dell'installatore mantiene i dati filamento/calibrazione attuali. Non ripristina automaticamente una vecchia geometria o un collaudo fisico.
 
-Guida completa illustrata: [Guida_completa_INDX_Orca_KlipperScreen.pdf](Guida_completa_INDX_Orca_KlipperScreen.pdf). Risultati: [TEST_PREVIEW_03.md](TEST_PREVIEW_03.md). I limiti e le quote non vengono misurati automaticamente.
+Guida completa illustrata: [Guida_completa_INDX_Orca_KlipperScreen.pdf](Guida_completa_INDX_Orca_KlipperScreen.pdf). I limiti e le quote non vengono misurati automaticamente.
 
 
 ## Ottimizzazione automatica: filamenti identici e pareti fini
@@ -96,25 +96,17 @@ La decisione viene raccolta una sola volta nel riepilogo finale: applica le alte
 
 Il controllo nativo INDX usa regole distinte per modello e interfaccia, incluse assegnazioni locali e pittura. Le coppie rigido/flessibile documentate sono ammesse con condizioni visibili; PLA/PETG sono ammesse solo nel ruolo di supporto. I materiali caricati ma inutilizzati non bloccano la stampa; i filamenti dedicati ai supporti sono separati da questa regola. Il colore alternativo richiede una conferma esplicita. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
 
-![Risparmio e cambi tool nel fixture simulato](indx-materiale-risparmio-cambi.png)
-
-
 ## Una sola richiesta alla fine delle tre modalita
 
 Orca completa prima tutte le prove base/alternativa di Dettaglio, Equilibrato e Veloce. Solo alla fine mostra un unico riepilogo con, per ciascuna modalita, tempo senza/con alternativa, risparmio in minuti/secondi e percentuale, cambi tool aggiunti e profilo/tool proposto. Le alternative piu lente sono indicate come Non conviene; se nessuna conviene non compare alcuna domanda.
 
 **Usa alternative convenienti** applica l'alternativa solo alle righe con vantaggio, poi ricalcola i risultati finali. **Mantieni materiali originali**, predefinito, conserva le tre basi. Cambiare modalita riusa la decisione finche gli input restano uguali; Ricalcola o Ricalcola confronto avviano una nuova valutazione completa. Chiudere il pannello o cambiare progetto/parametri invalida il riepilogo.
 
-![Riepilogo unico dei tre modi](indx-materiale-confronto-unico.png)
-
 ## Filamenti sul touch: selezione dagli elenchi
 
 In Filamenti scegli il tool e Mostra (i tuoi filamenti oppure nuove basi Orca/personali). **Marca** e **Tipo materiale** sono elenchi ricavati dal catalogo compatibile sincronizzato e dalla libreria personale: selezionarli filtra **Profilo / prodotto**. Non si compilano a mano; la base selezionata resta leggibile. Se manca la marca, sincronizza il catalogo con Orca aperto; le basi Generic restano disponibili dove presenti nel catalogo.
 
 Imposta colore e condizioni, poi premi **Conferma filamento e scegli nome**. Il nome personale viene richiesto a quel punto: puoi accettare il suggerimento o rinominarlo e premere **Salva e assegna**. Annulla non scrive dati. Richiamare o rinominare un profilo personale mantiene la stessa identita e le calibrazioni valide. La lista iniziale mostra le basi se non hai ancora filamenti personali.
-
-![Selettori di marca, materiale e profilo su dati sintetici](klipperscreen-filamenti-elenchi.png)
-
 
 ## Consigli materiali e interfacce
 
@@ -127,7 +119,7 @@ Il colore predefinito riscritto dall’importazione 3MF non genera un falso conf
 
 ## 17 ottobre — mappatura nella pagina principale
 
-Automatico / Manuale accanto a INDX, selettore Tool sotto ogni filamento, rispetto della mappa manuale in Auto slice. [Verifica con il filamento 2](PROVA_MAPPATURA_TOOL.md). Sezione del risultato scelto e panoramica Mainsail documentate nella guida completa.
+Automatico / Manuale accanto a INDX, selettore Tool sotto ogni filamento, rispetto della mappa manuale in Auto slice. Verifica con il filamento 2. Sezione del risultato scelto e panoramica Mainsail documentate nella guida completa.
 
 ## Ugelli direttamente nella pagina principale
 

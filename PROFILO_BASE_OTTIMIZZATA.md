@@ -25,9 +25,6 @@ Stessa geometria, stessi quattro filamenti, stessa torre di spurgo e stessi para
 | Equilibrato | 1h 49m 33s | 1h 43m 26s | 6m 07s (5,6%) | 45,5 g | 242 |
 | Veloce | 1h 11m 33s | 1h 09m 44s | 1m 49s (2,5%) | 38,0 g | 0 |
 
-![Prima](base-velocita-prima.png)
-![Dopo](base-velocita-dopo.png)
-
 Esportato anche il G-code Equilibrato: valori di accelerazione effettivi 750, 1000, 1500, 2000 e 3000 mm/s², inclusi i rallentamenti locali; nessun comando di accelerazione oltre 3000. Le impostazioni esportate riportano pareti 60/110, infill 150, travel 200 e portata 8/8/8/8. Nessun file è stato inviato in stampa.
 
 ## Uso e limiti

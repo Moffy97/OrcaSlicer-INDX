@@ -12,11 +12,6 @@ Correzione dimensioni display: scala esplicita anche per i testi interni dei con
 - **Tool e dock:** schede separate per ugello, dock, offset e percorso; salvataggio e test fisici in aree distinte. Per raggiungere i campi successivi scorrere il contenuto.
 - **Tema globale:** grafite, verde acqua, contrasti e campi ampi, pulsanti arrotondati, stesso aspetto anche nei pannelli standard. Rimangono le conferme delle azioni fisiche.
 
-![Panoramica con dati di prova](studio-overview.png)
-![Filamenti con dati di prova](studio-indx_filaments.png)
-![Tool e dock con dati di prova](studio-indx_machine_panel.png)
-![Schermo reale dopo l'installazione del tema](studio-live-home.png)
-
 Installazione verificata sulla macchina: solo KlipperScreen riavviato, Klipper e Moonraker attivi. Controllo degli hash prima/dopo: configurazioni `.cfg`, libreria, assegnazioni, calibrazioni e montaggio invariati. Backup dei pannelli, configurazione e tema precedenti disponibile per rollback. Il display reale è 1280×800; le immagini dei pannelli sono rendering GTK isolati con dati di prova, non prove di hardware montato.
 
 ## Accelerazioni più alte
@@ -46,8 +41,6 @@ Sovol dichiara 700 mm/s e 40000 mm/s² per la macchina originale: [fonte ufficia
 | Dettaglio | 1h 47m 48s | 1h 38m 12s | 9m 36s | 41,4 g | 242 |
 | Equilibrato | 1h 43m 26s | 1h 36m 54s | 6m 32s | 45,5 g | 242 |
 | Veloce | 1h 09m 44s | 1h 08m 23s | 1m 21s | 38,0 g | 0 |
-
-![Confronto Performance](performance-confronto.png)
 
 Stime, non tempi fisici. Identica geometria, filamenti, torre, diametri 0,6/0,4/0,6/0,8 e assegnazione automatica. Il limite di portata spiega perché le velocità nominali maggiori non dimezzano i tempi. Il G-code Equilibrato è stato esportato senza stamparlo: accelerazione massima dei comandi 12000 mm/s², valori di processo corretti e portata 8/8/8/8. Non compare più l'avviso di accelerazione oltre il limite del profilo; restano gli avvisi sperimentali originali su torre e multidiametro.
 

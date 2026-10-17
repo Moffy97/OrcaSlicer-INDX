@@ -34,4 +34,3 @@ La validazione nativa controlla gli slot effettivamente usati e il loro ruolo. I
 Le indicazioni provenienti da altre stampanti sono usate come guida ai materiali. Il loro trasferimento alla SV08 Max INDX richiede il collaudo fisico; non ne vengono copiate macro o movimenti.
 
 
-![Guida materiali integrata in Orca](materiali-supporti-orca.png)
