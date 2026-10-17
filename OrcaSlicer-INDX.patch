@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..a0295c77
+index 00000000..7a86dd6f
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,50 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -73,6 +73,9 @@ index 00000000..a0295c77
 +Il controllo di compatibilita materiale INDX consulta la capacita del primo feeder fisico condiviso, anziche interpretare T3 o T63 come estrusori fisici distinti. Una capacita materiale assente resta un blocco; per le altre stampanti restano le capacita per estrusore, con shift fuori intervallo respinti.
 +
 +Veloce usa il maggiore ugello disponibile per pareti, superfici e riempimento sparso. Dettaglio ed Equilibrato mantengono i propri target per pareti e superfici. Con 0,4/0,6/0,8: Veloce seleziona 0,8 per tutte le funzioni proposte; gli ugelli piu piccoli montati ma inutilizzati non limitano la griglia Z. Supporti e pittura conservano le proprie assegnazioni esplicite.
++
++
++The optimization page keeps one result per mode for the lifetime of the workspace. Compare modes queues native slices sequentially and runs the initially selected mode last, preserving the user's final selection on successful completion. Only native valid results populate the table; time and weight badges are relative to computed rows. The comparison context hashes full configuration, plate mapping, nozzle setup, immutable mesh identity, instance/volume transformations, model settings and painting/layer profile revisions, and custom per-layer G-code. A role proposal explicitly accepts its own configuration transition; other context changes invalidate all rows. Unfinished, failed and interrupted runs never populate a row. The queue is cleared on errors or external edits. Cache invalidation also follows native result invalidation when idle.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -463,10 +466,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..b3294472
+index 00000000..cb631eaf
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1064 @@
+@@ -0,0 +1,1150 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -477,6 +480,7 @@ index 00000000..b3294472
 +#include "libslic3r/Preset.hpp"
 +#include "libslic3r/PrintConfig.hpp"
 +#include "libslic3r/Print.hpp"
++#include "libslic3r/Model.hpp"
 +#include "libslic3r/IndxChecks.hpp"
 +#include "libslic3r/Config.hpp"
 +#include "libslic3r/Semver.hpp"
@@ -514,6 +518,7 @@ index 00000000..b3294472
 +#include <wx/weakref.h>
 +#include <wx/panel.h>
 +#include <wx/gauge.h>
++#include <wx/colour.h>
 +#include <numeric>
 +#include <zlib.h>
 +#include <chrono>
@@ -531,6 +536,7 @@ index 00000000..b3294472
 +#include <utility>
 +#include <vector>
 +#include <locale>
++#include <limits>
 +
 +namespace Slic3r { namespace GUI {
 +namespace {
@@ -1428,19 +1434,75 @@ index 00000000..b3294472
 +    auto* actions=new wxBoxSizer(wxHORIZONTAL);
 +    auto* slice=new wxButton(optimization,wxID_ANY,_L("Ricalcola"),wxDefaultPosition,wxSize(220,46));
 +    actions->Add(slice,0,wxRIGHT,16);
++    auto* compare=new wxButton(optimization,wxID_ANY,_L("Confronta le 3 modalita"),wxDefaultPosition,wxSize(220,46));
++    actions->Add(compare,0,wxRIGHT,16);
 +    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita: lo slicing parte automaticamente."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
 +    opt_layout->Add(actions,0,wxEXPAND|wxALL,20);
 +    auto* progress=new wxGauge(optimization,wxID_ANY,100,wxDefaultPosition,wxSize(-1,6));opt_layout->Add(progress,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* metrics=new wxStaticText(optimization,wxID_ANY,_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));
 +    auto metric_font=metrics->GetFont();metric_font.SetPointSize(13);metric_font.SetWeight(wxFONTWEIGHT_BOLD);metrics->SetFont(metric_font);
 +    opt_layout->Add(metrics,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* report=new wxTextCtrl(optimization,wxID_ANY,_L("Le assegnazioni e i risultati del piatto corrente compariranno qui.\nL'altezza layer considera solo i tool usati. Supporti e pittura mantengono le assegnazioni esistenti."),wxDefaultPosition,wxSize(-1,160),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
++    auto* comparison=new wxListCtrl(optimization,wxID_ANY,wxDefaultPosition,wxSize(-1,116),wxLC_REPORT|wxLC_SINGLE_SEL);
++    int comparison_column=0;
++    for(const auto& title:{_L("Modalita"),_L("Tempo stimato"),_L("Filamento (g)"),_L("Cambi tool"),_L("Confronto")})
++        comparison->InsertColumn(comparison_column++,title,wxLIST_FORMAT_LEFT,180);
++    opt_layout->Add(comparison,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* report=new wxTextCtrl(optimization,wxID_ANY,_L("Le assegnazioni e i risultati del piatto corrente compariranno qui.\nL'altezza layer considera solo i tool usati. Supporti e pittura mantengono le assegnazioni esistenti."),wxDefaultPosition,wxSize(-1,60),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
 +    opt_layout->Add(report,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);optimization->SetSizer(opt_layout);
 +    layout->Add(book,1,wxEXPAND|wxALL,8);dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1000,760));dialog->SetMinSize(wxSize(920,700));
 +    wxGetApp().UpdateDlgDarkUI(dialog);
 +    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
-+    struct SliceState {bool pending=false;bool seen_running=false;bool displayed=false;int plate=-1;int mode=-1;int idle_ticks=0;};
++    struct SliceState {
++        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;};
++        bool pending=false;bool seen_running=false;bool displayed=false;
++        int plate=-1;int mode=-1;int idle_ticks=0;
++        std::string context;
++        std::vector<Result> results=std::vector<Result>(3);
++        std::vector<int> queue;
++    };
 +    auto state=std::make_shared<SliceState>();
++    // Compare complete inputs, accepting only changes made by our own mode action.
++    // Mesh storage is immutable; identity plus transforms/config/paint timestamps
++    // detects edits without hashing every triangle on every UI timer tick.
++    auto context=[](){
++        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        std::ostringstream data;data.imbue(std::locale::classic());data<<std::setprecision(17);
++        data<<(plate?plate->get_index():-1)<<nozzle_setup().dump();
++        auto config=wxGetApp().preset_bundle->full_config(false,plate?std::optional<std::vector<int>>(plate->get_filament_maps()):std::nullopt);
++        for(const auto& key:config.keys())data<<key<<'='<<config.option(key)->serialize()<<'\n';
++        data<<p->model().id().id;
++        const auto custom=p->model().get_curr_plate_custom_gcodes();data<<custom.mode;
++        for(const auto& item:custom.gcodes)data<<item.print_z<<':'<<item.type<<':'<<item.extruder<<':'<<item.color<<':'<<item.extra<<'\n';
++        for(const auto* object:p->model().objects){
++            data<<object->id().id<<':'<<object->config.ModelConfig::timestamp()<<':'<<object->layer_height_profile.timestamp();
++            for(const auto& range:object->layer_config_ranges)data<<range.first.first<<range.first.second<<range.second.timestamp();
++            for(const auto* volume:object->volumes){
++                data<<volume->id().id<<&volume->mesh()<<volume->config.ModelConfig::timestamp()<<volume->get_matrix().matrix();
++                data<<volume->supported_facets.timestamp()<<volume->seam_facets.timestamp()<<volume->mmu_segmentation_facets.timestamp()<<volume->fuzzy_skin_facets.timestamp();
++            }
++            for(const auto* instance:object->instances)data<<instance->id().id<<instance->get_matrix().matrix()<<instance->printable;
++        }
++        return digest(data.str());
++    };
++    auto draw_comparison=[comparison,state,labels](){
++        comparison->Freeze();comparison->DeleteAllItems();
++        double best_time=std::numeric_limits<double>::max(),best_weight=best_time;
++        for(const auto& r:state->results)if(r.valid){best_time=std::min(best_time,r.seconds);best_weight=std::min(best_weight,r.grams);}
++        for(int i=0;i<3;++i){
++            const auto& r=state->results[i];const auto row=comparison->InsertItem(i,labels[i]);
++            comparison->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
++            comparison->SetItem(row,1,r.valid?r.time:_L("Da calcolare"));
++            comparison->SetItem(row,2,r.valid?wxString::Format("%.1f",r.grams):wxString("--"));
++            comparison->SetItem(row,3,r.valid?wxString::Format("%d",r.changes):wxString("--"));
++            wxString badge;
++            if(r.valid && std::abs(r.seconds-best_time)<.5)badge=_L("Minor tempo");
++            if(r.valid && std::abs(r.grams-best_weight)<.001)badge=badge.empty()?_L("Minor consumo"):_L("Minor tempo e consumo");
++            comparison->SetItem(row,4,badge);
++        }
++        comparison->Thaw();
++    };
++    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;draw_comparison();};
++    draw_comparison();
 +    auto painted=std::make_shared<std::string>();
 +    auto refresh=[status,tools,painted]() {
 +        try {
@@ -1474,23 +1536,34 @@ index 00000000..b3294472
 +            auto remote=task.get();progress.Update(100);wxGetApp().app_config->set("indx_printer_snapshot",remote.dump());refresh();
 +        }catch(const std::exception& e){status->SetLabel(wxString::FromUTF8(e.what()));}
 +    });
-+    auto run_slice=[dialog,report,selection,state,clear_metrics,progress_text,mode_buttons,slice](){
++    auto run_slice=[dialog,report,selection,state,clear_metrics,progress_text,mode_buttons,slice,compare,context,invalidate_comparison,draw_comparison](){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){progress_text->SetLabel(_L("Attendi la fine dello slicing o dell'esportazione in corso."));return;}
 +        auto* plate=p->get_partplate_list().get_curr_plate();
++        if(state->context!=context())invalidate_comparison();
++        state->results[*selection].valid=false;draw_comparison();
 +        clear_metrics();report->Clear();state->displayed=false;
-+        if(!plate || !plate->has_printable_instances()){progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
++        if(!plate || !plate->has_printable_instances()){state->queue.clear();progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
 +        p->update(false,true);
 +        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report)){
++            state->queue.clear();
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
 +        state->plate=plate->get_index();state->mode=*selection;state->pending=true;state->seen_running=false;state->idle_ticks=0;
-+        slice->Disable();for(auto* button:*mode_buttons)button->Disable();
++        slice->Disable();compare->Disable();for(auto* button:*mode_buttons)button->Disable();
 +        progress_text->SetLabel(_L("Preparazione dello slicing..."));
 +        // Reuse Orca's native validation and background worker without switching views.
 +        p->reslice();
++        state->context=context();
 +    };
 +    slice->Bind(wxEVT_BUTTON,[run_slice](wxCommandEvent&){run_slice();});
++    compare->Bind(wxEVT_BUTTON,[selection,state,mode_buttons,run_slice](wxCommandEvent&){
++        auto* p=wxGetApp().plater();
++        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
++        state->queue.clear();for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
++        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
++        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++    });
 +    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice](wxCommandEvent&){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
@@ -1501,17 +1574,24 @@ index 00000000..b3294472
 +        if(changed || state->mode!=i || !state->displayed)run_slice();
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,progress,progress_text,metrics,clear_metrics](wxTimerEvent&) {
++    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice](wxTimerEvent&) {
 +        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
-+        slice->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
++        slice->Enable(!busy && !state->pending);compare->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
++        if(!state->context.empty() && state->context!=context()){
++            invalidate_comparison();state->queue.clear();state->context=context();
++            clear_metrics();report->Clear();state->displayed=false;
++            progress_text->SetLabel(_L("Parametri modificati: ricalcola il confronto."));
++            if(state->pending){state->pending=false;progress_text->SetLabel(_L("Il progetto e cambiato durante il confronto. Ricalcola le modalita."));return;}
++        }
 +        if(!state->pending){
 +            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
++                invalidate_comparison();
 +                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Scegli una modalita o premi Ricalcola."));
 +            }
 +            return;
 +        }
-+        if(!plate || plate->get_index()!=state->plate){state->pending=false;clear_metrics();progress_text->SetLabel(_L("Piatto cambiato: avvia lo slicing del piatto selezionato."));return;}
++        if(!plate || plate->get_index()!=state->plate){state->pending=false;state->queue.clear();invalidate_comparison();clear_metrics();progress_text->SetLabel(_L("Piatto cambiato: avvia lo slicing del piatto selezionato."));return;}
 +        if(busy){
 +            state->seen_running=true;state->idle_ticks=0;
 +            const int percent=std::clamp(int(plate->get_slicing_percent()),0,100);progress->SetValue(percent);
@@ -1522,10 +1602,19 @@ index 00000000..b3294472
 +        // non-empty exported time; never display an unfinished/old Print's statistics.
 +        if(plate->is_slice_result_valid() && plate->fff_print() && !plate->fff_print()->print_statistics().estimated_normal_print_time.empty()){
 +            const auto& stats=plate->fff_print()->print_statistics();
++            const auto* result=plate->get_slice_result();
++            const double seconds=result?result->print_statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time:0.;
++            if(std::isfinite(seconds) && seconds>0. && std::isfinite(stats.total_weight)){
++                state->results[state->mode]={true,wxString::FromUTF8(stats.estimated_normal_print_time),seconds,stats.total_weight,stats.total_toolchanges};draw_comparison();
++            }
 +            metrics->SetLabel(wxString::Format(_L("Tempo stimato: %s     Materiale: %.1f g     Cambi tool: %d"),wxString::FromUTF8(stats.estimated_normal_print_time),stats.total_weight,stats.total_toolchanges));
 +            progress->SetValue(100);progress_text->SetLabel(_L("Slicing completato. Risultati del piatto corrente."));state->displayed=true;state->pending=false;
++            if(!state->queue.empty()){
++                *selection=state->queue.front();state->queue.erase(state->queue.begin());
++                for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++            }
 +        }else if(state->seen_running || ++state->idle_ticks>=6){
-+            state->pending=false;clear_metrics();progress_text->SetLabel(_L("Slicing non completato. Controlla le notifiche di Orca, correggi il problema e riprova qui."));
++            state->pending=false;state->queue.clear();clear_metrics();progress_text->SetLabel(_L("Slicing non completato. Controlla le notifiche di Orca, correggi il problema e riprova qui."));
 +        }
 +    },id);
 +    timer->Start(500);refresh();dialog->Show();

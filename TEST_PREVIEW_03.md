@@ -81,3 +81,12 @@ Prova GUI: Veloce > Equilibrato completati premendo soltanto la modalita, senza 
 ## Matrice aggiuntiva di 60 slicing
 
 967 asserzioni passate sui G-code esportati; regressioni 467/38 passate. [Report completo e risultati misurati](SIMULAZIONI_AUTO_INDX.md).
+
+
+## Confronto affiancato delle modalita
+
+Prova GUI Windows: Confronta le 3 modalita ha completato Dettaglio, Veloce, Equilibrato, tornando a Equilibrato selezionato all'inizio. Tabella simultanea: Dettaglio 1h 58m 2s / 41,4 g / 242 cambi; Equilibrato 1h 49m 33s / 45,5 g / 242 cambi; Veloce 1h 11m 33s / 38,0 g / 0 cambi. Evidenziato Minor tempo e consumo su Veloce. Sono stime del progetto di prova, non misure fisiche.
+
+Verifica invalidazione: cambiando temporaneamente il layer da 0,20 a 0,18 mm, tutte le righe sono tornate Da calcolare e le metriche precedenti sono state nascoste. Il valore originale 0,20 mm e stato ripristinato. Nessuna stampa inviata. Suite IndxChecks: 275 asserzioni in 11 casi passate; pipeline FFF invariata rispetto alle 60 simulazioni documentate.
+
+![Confronto delle tre modalita](indx-confronto-modalita.png)

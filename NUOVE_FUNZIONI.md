@@ -65,3 +65,10 @@ I tre pulsanti principali sono Info INDX, Config tool e Auto slicing optimizatio
 In Auto slicing optimization scegli Dettaglio, Equilibrato o Veloce: il cambio di modalita applica la proposta e avvia il motore nativo Orca senza chiudere la finestra o cambiare pagina. La stessa area mostra avanzamento, assegnazioni, tempo stimato, materiale e cambi tool. Rilanciare la stessa proposta riusa il processo; un profilo modificato non viene sovrascritto.
 
 Il cambio modalita nasconde i risultati precedenti. Il nuovo calcolo parte automaticamente nella stessa pagina; Ricalcola resta disponibile per ripetere una prova o recuperare dopo un errore. Piatto cambiato o risultato invalidato nascondono le metriche. Eventuali errori nativi restano nelle notifiche Orca e il pannello invita a correggere e riprovare. Nessuna stampa viene avviata dal pulsante di slicing.
+
+
+## Confronto delle tre modalita
+
+La pagina Auto slicing optimization conserva nella stessa tabella tempo stimato, filamento in grammi e cambi tool per Dettaglio, Equilibrato e Veloce. Le righe mancanti sono Da calcolare. Gli indicatori Minor tempo e Minor consumo confrontano i risultati disponibili; non valutano la qualita del pezzo.
+
+**Confronta le 3 modalita** esegue tre slicing nativi in sequenza, terminando con la modalita inizialmente selezionata. Anche il normale cambio di modalita aggiorna la relativa riga. Il confronto viene conservato durante la sessione del pannello; chiudendo il pannello occorre ricalcolarlo. Una modifica a piatto, modello, montaggio, filamento o parametri invalida i risultati. I tempi sono stime del motore Orca e il consumo comprende cio che Orca conteggia nel piatto, inclusa la torre se presente.
