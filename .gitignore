@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+upstream-orca/
+build/
+*.log
+*.info
+.env
+credentials*
+known_hosts
+indx-filament-library.json
+indx-pa-results.json
