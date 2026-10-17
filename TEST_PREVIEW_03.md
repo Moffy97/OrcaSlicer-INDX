@@ -60,3 +60,14 @@ Build Windows Release riuscita. Suite IndxChecks: 275 asserzioni in 11 casi, ord
 Verifica GUI: Veloce mostra T3 da 0,80 per pareti, superfici e riempimento. Nel 3MF salvato le sei funzioni proposte sono tutte sul filamento 4.
 
 ![Veloce: ugello maggiore per tutte le funzioni proposte](ottimizzazione-veloce-08.png)
+
+
+## Workspace con slicing integrato
+
+Build Windows Release riuscita; 275 asserzioni in 11 casi IndxChecks passate. Prova GUI del flusso completo sulla stessa pagina: Equilibrato assegna 0,6/0,8, con stima 1h 49m 33s, 45,5 g e 242 cambi; Veloce assegna 0,8 per tutte le funzioni proposte, con stima 1h 11m 33s, 38,0 g e 0 cambi. Il G-code Veloce riporta 1h 11m 33s e 38,05 g, coerente con l'arrotondamento del pannello. Sono stime del progetto di prova, non misure di una stampa fisica.
+
+Cambio modalita: metriche nascoste fino al nuovo slicing. Ricalcolo Veloce ripetuto: nessun nuovo processo duplicato. I comandi si riabilitano al termine. La home non contiene metriche o tabelle filamenti. Il montaggio e la sincronizzazione filamenti sono in Config tool. Nessun invio alla stampante.
+
+![Modalita, slicing e risultati nella stessa pagina](indx-auto-slice-workspace.png)
+
+Dettaglio verificato nello stesso pannello: pareti e superfici T1 da 0,4, infill T3 da 0,8; stima 1h 58m 2s, 41,4 g, 242 cambi.

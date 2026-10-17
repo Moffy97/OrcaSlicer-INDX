@@ -22,7 +22,7 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..bce20f48
+index 00000000..ed5c9f3e
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
 @@ -0,0 +1,47 @@
@@ -55,10 +55,10 @@ index 00000000..bce20f48
 +
 +Generated preset fingerprints prevent background overwrites after local edits. Explicit synchronization displays changed values, offers cancellation, and backs up the previous generated configuration. Touchscreen JSON writes keep previous library, assignment, hardware and checklist files in a history folder. Installer backups restore code and menus without rolling back newer filament data.
 +
-+The role proposal uses the current filament/tool mapping and same-material candidate nozzles. Detail uses the smallest nozzle; balanced combines fine walls with the largest infill nozzle; speed chooses the largest available wall nozzle up to 0.4 mm and a larger infill nozzle. Supports and painting remain explicit. Local feature overrides must be resolved before applying a global proposal. Preview movement properties show project tool/nozzle and the exact count of base Z intervals matching the deposited thickness, with no assumption of constant layer height. The manual commissioning checklist invalidates dependent steps after a failed prerequisite or changed hardware; it does not set Klipper movement gates.
++The role proposal uses the current filament/tool mapping and same-material candidate nozzles. Detail uses the finest associated nozzle up to 0.4 mm for walls and solid surfaces; balanced uses the largest up to 0.6 mm (or the smallest available fallback); speed uses the largest for walls, solids and sparse infill. Sparse infill uses the largest associated nozzle in every mode. Supports and painting remain explicit. Local feature overrides must be resolved before applying a global proposal. Preview movement properties show project tool/nozzle and the exact count of base Z intervals matching the deposited thickness, with no assumption of constant layer height. The manual commissioning checklist invalidates dependent steps after a failed prerequisite or changed hardware; it does not set Klipper movement gates.
 +
 +
-+The INDX workspace uses direct selection buttons and a single content area in both applications. Orca reuses the selected physical printer host, the printer profile host/web UI address, or the migrated legacy host. It has no duplicate connection editor in the workspace. Hardware and filament tables update in place; explicit checks and role proposals report inline. Local edits to generated profiles still require review before replacement.
++The INDX workspace uses direct selection buttons and a single content area in both applications. Orca reuses the selected physical printer host, the printer profile host/web UI address, or the migrated legacy host. It has no duplicate connection editor in the workspace. The three pages are Info INDX, Config tool and Auto slicing optimization. Hardware updates in place on Config tool, which also keeps explicit filament synchronization available. Optimization owns mode selection, native reslice, progress and print statistics. Mode changes and invalidated results clear displayed metrics. Reapplying unchanged settings avoids duplicate process presets; generated names depend on settings rather than predecessor names, and edited presets are not overwritten. Native slicing validation and notifications remain active. The workspace does not switch the main view or initiate printing. Local edits to generated profiles still require review before replacement.
 +
 +KlipperScreen owns the machine editor. Incomplete coordinates may be saved as a draft. Applying requires a fresh idle snapshot, heaters off, complete bounded geometry and an unchanged file fingerprint. Only the INDX user configuration is edited; core tool-change macros are preserved. The editor generates missing Tn shortcuts and a revision-guarded delayed SAVE_VARIABLE block for offsets. That block runs once for a new revision, preserving later official calibration results. Every geometry save backs up files and invalidates previous commissioning. A maintenance installation can use an explicitly registered inactive reference profile for limits; it does not activate that profile.
 +
@@ -463,10 +463,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..0ea539d1
+index 00000000..76d29e76
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,974 @@
+@@ -0,0 +1,1059 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -513,6 +513,7 @@ index 00000000..0ea539d1
 +#include <wx/radiobox.h>
 +#include <wx/weakref.h>
 +#include <wx/panel.h>
++#include <wx/gauge.h>
 +#include <numeric>
 +#include <zlib.h>
 +#include <chrono>
@@ -1034,12 +1035,12 @@ index 00000000..0ea539d1
 +        wxGetApp().app_config->set("indx_preflight_report",project_check(print,remote).dump());
 +    }catch(const std::exception& e){BOOST_LOG_TRIVIAL(error)<<"INDX check: "<<e.what();}
 +}
-+void suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
-+    if(!is_indx_printer())return;
++bool suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
++    if(!is_indx_printer())return false;
 +    try {
 +        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: ugello maggiore per pareti, superfici e infill"));
 +        wxSingleChoiceDialog choice(parent,_L("La proposta riguarda pareti, superfici e infill. Supporti e pittura mantengono le assegnazioni esistenti. Tempi e cambi effettivi sono disponibili dopo lo slicing."),_L("Proposta tool INDX"),labels);
-+        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return;style=choice.GetSelection();}
++        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return false;style=choice.GetSelection();}
 +        auto& bundle=*wxGetApp().preset_bundle;
 +        // Read current presets and the current plate map, not a stale background Print.
 +        const auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();
@@ -1082,14 +1083,23 @@ index 00000000..0ea539d1
 +            summary+=wxString::Format(_L("%s: filamento %d, T%d, ugello %.2f mm\n"),role_labels[index++],r.at("filament").get<int>(),r.at("tool").get<int>(),r.at("diameter").get<double>());
 +        }
 +        summary+="\n"+_L("L'altezza comune si adatta ai tool effettivamente usati dopo l'applicazione. La combinazione infill viene attivata; la geometria determina dove puo essere applicata. Non e una previsione di risparmio di tempo.");
-+        if(!output && wxMessageBox(summary,_L("Applica proposta tool INDX"),wxYES_NO|wxICON_QUESTION,parent)!=wxYES)return;
-+        if(!wxGetApp().check_and_save_current_preset_changes(_L("Proposta tool INDX"),_L("Salva le modifiche ai profili prima di applicare la proposta."),false))return;
++        if(!output && wxMessageBox(summary,_L("Applica proposta tool INDX"),wxYES_NO|wxICON_QUESTION,parent)!=wxYES)return false;
++        if(!wxGetApp().check_and_save_current_preset_changes(_L("Proposta tool INDX"),_L("Salva le modifiche ai profili prima di applicare la proposta."),false))return false;
 +        Preset process=bundle.prints.get_edited_preset();
 +        const std::string keys[]={"wall","wall","solid","solid","solid","infill"};
 +        for(int i=0;i<6;++i)process.config.set_key_value(fields[i],new ConfigOptionInt(roles.at(keys[i]).at("filament").get<int>()));
 +        process.config.set_key_value("infill_combination",new ConfigOptionBool(true));
-+        const auto name="INDX proposta - "+digest(process.name+roles.dump()).substr(0,12);
-+        if(bundle.prints.find_preset(name,false))throw std::runtime_error(_u8L("Questa proposta esiste gia: seleziona il processo salvato dall'elenco."));
++        const bool changed=!process.config.diff(bundle.prints.get_edited_preset().config).empty();
++        // Key by resulting settings rather than the previous proposal's name. Reapplying a
++        // mode reuses its saved process; edited processes are never overwritten.
++        Json settings=Json::object();
++        for(const auto& key:process.config.keys())settings[key]=process.config.option(key)->serialize();
++        const auto base_name="INDX auto - "+digest(settings.dump()).substr(0,12);
++        auto name=base_name;
++        for(int suffix=2;const auto* existing=bundle.prints.find_preset(name,false);++suffix) {
++            if(existing->config.diff(process.config).empty())break;
++            name=base_name+" - "+std::to_string(suffix);
++        }
 +        wxGetApp().plater()->take_snapshot("Proposta tool INDX");
 +        if(remap) {
 +            bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(proposal_maps));
@@ -1097,10 +1107,14 @@ index 00000000..0ea539d1
 +            auto* current=wxGetApp().plater()->get_partplate_list().get_curr_plate();
 +            if(current){current->set_filament_maps(proposal_maps);current->set_filament_map_mode(fmmManual);}
 +        }
-+        bundle.prints.save_current_preset(name,false,false,&process);
-+        wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);wxGetApp().load_current_presets(false,false);
-+        if(output)output->SetValue(summary+"\n"+_L("Processo separato creato. Salva il progetto e rislicera."));
-+    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Proposta tool INDX"),wxOK|wxICON_INFORMATION,parent);}
++        if(changed) {
++            if(!bundle.prints.find_preset(name,false))bundle.prints.save_current_preset(name,false,false,&process);
++            wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);
++        }
++        if(changed || remap)wxGetApp().load_current_presets(false,false);
++        if(output)output->SetValue(summary);
++        return true;
++    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Proposta tool INDX"),wxOK|wxICON_INFORMATION,parent);return false;}
 +}
 +bool check_indx_printer(wxWindow* parent,const Print& print,bool sending,const std::string& target,wxTextCtrl* output) {
 +    if(!is_indx_printer())return true;
@@ -1351,99 +1365,170 @@ index 00000000..0ea539d1
 +void show_indx_workspace(wxWindow* parent) {
 +    static wxDialog* workspace=nullptr;
 +    if(workspace){workspace->Raise();return;}
-+    auto* dialog=new wxDialog(parent,wxID_ANY,_L("INDX - stampante, filamenti e controlli"),wxDefaultPosition,wxSize(1000,740),wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
++    auto* dialog=new wxDialog(parent,wxID_ANY,_L("INDX"),wxDefaultPosition,wxDefaultSize,wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
 +    workspace=dialog;
 +    dialog->Bind(wxEVT_DESTROY,[dialog](wxWindowDestroyEvent& e){if(e.GetEventObject()==dialog)workspace=nullptr;e.Skip();});
 +    dialog->Bind(wxEVT_CLOSE_WINDOW,[dialog](wxCloseEvent&){dialog->Destroy();});
 +    auto* layout=new wxBoxSizer(wxVERTICAL);
-+    auto* status=new wxStaticText(dialog,wxID_ANY,_L("INDX 0.3.0-preview - collegamento alla stampante"));
-+    layout->Add(status,0,wxEXPAND|wxALL,12);
-+    auto* notebook=new wxSimplebook(dialog,wxID_ANY);
++    auto heading=[](wxWindow* owner,const wxString& label,int size=15){
++        auto* text=new wxStaticText(owner,wxID_ANY,label);
++        auto font=text->GetFont();font.SetPointSize(size);font.SetWeight(wxFONTWEIGHT_BOLD);text->SetFont(font);return text;
++    };
++    layout->Add(heading(dialog,_L("INDX workspace"),20),0,wxLEFT|wxRIGHT|wxTOP,20);
++    layout->Add(new wxStaticText(dialog,wxID_ANY,_L("La tua macchina. I tuoi tool. Lo slicing, in un unico posto.")),0,wxALL,20);
++    auto* book=new wxSimplebook(dialog,wxID_ANY);
 +    auto* navigation=new wxBoxSizer(wxHORIZONTAL);
-+    auto selected_buttons=std::make_shared<std::vector<wxToggleButton*>>();
-+    for(const auto& label:{_L("Stampante e tool"),_L("Filamenti e calibrazioni"),_L("Controlli")}) {
-+        const int index=int(selected_buttons->size());auto* button=new wxToggleButton(dialog,wxID_ANY,label,wxDefaultPosition,wxSize(230,45));selected_buttons->push_back(button);navigation->Add(button,1,wxALL,5);
-+        button->Bind(wxEVT_TOGGLEBUTTON,[notebook,selected_buttons,index](wxCommandEvent&){notebook->SetSelection(index);for(size_t i=0;i<selected_buttons->size();++i)(*selected_buttons)[i]->SetValue(i==size_t(index));});
++    auto tabs=std::make_shared<std::vector<wxToggleButton*>>();
++    for(const auto& label:{_L("Info INDX"),_L("Config tool"),_L("Auto slicing optimization")}) {
++        const int index=int(tabs->size());
++        auto* button=new wxToggleButton(dialog,wxID_ANY,label,wxDefaultPosition,wxSize(-1,48));
++        tabs->push_back(button);navigation->Add(button,1,wxALL,4);
++        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index](wxCommandEvent&){
++            book->SetSelection(index);for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==size_t(index));
++        });
 +    }
-+    selected_buttons->front()->SetValue(true);layout->Add(navigation,0,wxEXPAND|wxLEFT|wxRIGHT,8);
-+    auto page=[&](const wxString& label){auto* p=new wxPanel(notebook);notebook->AddPage(p,label);return p;};
-+    auto* machine=page(_L("Stampante e tool"));auto* materials=page(_L("Filamenti e calibrazioni"));auto* checks=page(_L("Controlli"));
++    tabs->front()->SetValue(true);layout->Add(navigation,0,wxEXPAND|wxLEFT|wxRIGHT,16);
++    auto page=[&](const wxString& label){auto* panel=new wxPanel(book);book->AddPage(panel,label);return panel;};
++    auto* info=page(_L("Info INDX"));auto* machine=page(_L("Config tool"));auto* optimization=page(_L("Auto slicing optimization"));
++    auto* info_layout=new wxBoxSizer(wxVERTICAL);
++    info_layout->Add(heading(info,_L("Pronto per il multidiametro")),0,wxALL,20);
++    auto* info_text=new wxStaticText(info,wxID_ANY,_L("Configura numero, diametri, tipo ugello, dock e offset da KlipperScreen. Orca riceve il montaggio senza doverlo inserire due volte.\n\nIn Auto slicing optimization scegli il risultato che vuoi ottenere: l'assegnazione dei tool, lo slicing e i risultati sono nella stessa pagina.\n\nFilamenti e calibrazioni restano disponibili nei loro comandi dedicati. La connessione usa la stampante gia selezionata in Orca."));
++    info_text->Wrap(860);info_layout->Add(info_text,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* status=new wxStaticText(info,wxID_ANY,wxEmptyString);status->Wrap(860);
++    info_layout->Add(status,0,wxEXPAND|wxALL,20);
++    auto* go=new wxButton(info,wxID_ANY,_L("Scegli come stampare"),wxDefaultPosition,wxSize(250,44));info_layout->Add(go,0,wxALL,20);
++    go->Bind(wxEVT_BUTTON,[book,tabs](wxCommandEvent&){book->SetSelection(2);for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==2);});
++    info->SetSizer(info_layout);
 +    auto* machine_layout=new wxBoxSizer(wxVERTICAL);
-+    auto* read=new wxButton(machine,wxID_ANY,_L("Aggiorna dati dalla stampante"));machine_layout->Add(read,0,wxALL,12);
-+    auto* explanation=new wxStaticText(machine,wxID_ANY,_L("Numero, diametri, Standard/CHT, dock e offset si gestiscono su KlipperScreen. Qui vedi i dati ricevuti: nessun doppio inserimento.\nLa sincronizzazione automatica attende profili salvati e la fine dello slicing. Le quote mancanti sono indicate con --."));
-+    explanation->Wrap(920);machine_layout->Add(explanation,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
++    machine_layout->Add(heading(machine,_L("Tool della stampante")),0,wxALL,20);
++    auto* note=new wxStaticText(machine,wxID_ANY,_L("Modifica il montaggio su KlipperScreen. Qui controlli i dati sincronizzati; -- indica una quota non confermata."));note->Wrap(860);
++    machine_layout->Add(note,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* tool_actions=new wxBoxSizer(wxHORIZONTAL);
++    auto* read=new wxButton(machine,wxID_ANY,_L("Aggiorna dalla stampante"));tool_actions->Add(read,0,wxRIGHT,12);
++    auto* sync=new wxButton(machine,wxID_ANY,_L("Sincronizza filamenti nel progetto"));tool_actions->Add(sync,0);
++    machine_layout->Add(tool_actions,0,wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* tools=new wxListCtrl(machine,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
-+    int column=0;for(const auto& title:{_L("Tool"),_L("Diametro mm"),_L("Tipo"),_L("Dock X"),_L("Dock Y"),_L("Offset X"),_L("Offset Y"),_L("Offset Z")}){tools->InsertColumn(column,title,wxLIST_FORMAT_LEFT,column==1?120:105);++column;}
-+    machine_layout->Add(tools,1,wxEXPAND|wxALL,12);machine->SetSizer(machine_layout);
-+    auto* material_layout=new wxBoxSizer(wxVERTICAL);
-+    auto* material_note=new wxStaticText(materials,wxID_ANY,_L("I profili personali e le calibrazioni si salvano sul touchscreen. Importali nel progetto con un solo comando; poi salva e rislicera."));material_note->Wrap(920);
-+    material_layout->Add(material_note,0,wxEXPAND|wxALL,12);
-+    auto* sync=new wxButton(materials,wxID_ANY,_L("Sincronizza filamenti nel progetto"));material_layout->Add(sync,0,wxLEFT|wxRIGHT|wxBOTTOM,12);
-+    auto* filaments=new wxListCtrl(materials,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
-+    column=0;for(const auto& title:{_L("Tool"),_L("Filamento"),_L("Colore"),_L("Ugello / piano C"),_L("PA"),_L("Flow"),_L("Portata mm3/s")}){filaments->InsertColumn(column,title,wxLIST_FORMAT_LEFT,column==1?220:118);++column;}
-+    material_layout->Add(filaments,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-+    auto* sync_result=new wxTextCtrl(materials,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(-1,90),wxTE_MULTILINE|wxTE_READONLY);
-+    material_layout->Add(sync_result,0,wxEXPAND|wxALL,12);materials->SetSizer(material_layout);
-+    auto* check_layout=new wxBoxSizer(wxVERTICAL);auto* inspect=new wxButton(checks,wxID_ANY,_L("Controlla il piatto corrente"));check_layout->Add(inspect,0,wxALL,12);
-+    wxArrayString styles;styles.Add(_L("Dettaglio"));styles.Add(_L("Equilibrato"));styles.Add(_L("Veloce"));
-+    auto* style=new wxRadioBox(checks,wxID_ANY,_L("Assegnazione pareti e riempimento"),wxDefaultPosition,wxDefaultSize,styles,3,wxRA_SPECIFY_COLS);style->SetSelection(1);
-+    check_layout->Add(style,0,wxEXPAND|wxLEFT|wxRIGHT,12);
-+    auto* propose=new wxButton(checks,wxID_ANY,_L("Applica proposta in un processo separato"));check_layout->Add(propose,0,wxALL,12);
-+    auto* report=new wxTextCtrl(checks,wxID_ANY,_L("Controlla confronta solo i tool usati nel piatto. Una proposta modifica il processo del progetto, non i dock della stampante."),wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY);
-+    check_layout->Add(report,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);checks->SetSizer(check_layout);
-+    layout->Add(notebook,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,8);dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1020,740));dialog->SetMinSize(wxSize(780,580));
++    int column=0;for(const auto& title:{_L("Tool"),_L("Diametro mm"),_L("Tipo"),_L("Dock X"),_L("Dock Y"),_L("Offset X"),_L("Offset Y"),_L("Offset Z")}){tools->InsertColumn(column,title,wxLIST_FORMAT_LEFT,column==1?120:100);++column;}
++    machine_layout->Add(tools,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* sync_result=new wxTextCtrl(machine,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(-1,64),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
++    machine_layout->Add(sync_result,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);machine->SetSizer(machine_layout);
++    auto* opt_layout=new wxBoxSizer(wxVERTICAL);
++    opt_layout->Add(heading(optimization,_L("Come vuoi stampare?")),0,wxALL,20);
++    auto* modes=new wxBoxSizer(wxHORIZONTAL);
++    auto mode_buttons=std::make_shared<std::vector<wxToggleButton*>>();
++    const wxString labels[]={_L("Dettaglio"),_L("Equilibrato"),_L("Veloce")};
++    const wxString descriptions[]={_L("Pareti e superfici: ugello fine, fino a 0,4 mm.\nRiempimento: ugello maggiore."),_L("Pareti e superfici: fino a 0,6 mm.\nRiempimento: ugello maggiore."),_L("Ugello maggiore per tutto:\npareti, superfici e riempimento.")};
++    auto selection=std::make_shared<int>(1);
++    for(int i=0;i<3;++i){
++        auto* card=new wxPanel(optimization);auto* card_layout=new wxBoxSizer(wxVERTICAL);
++        auto* button=new wxToggleButton(card,wxID_ANY,labels[i],wxDefaultPosition,wxSize(-1,46));mode_buttons->push_back(button);
++        card_layout->Add(button,0,wxEXPAND|wxBOTTOM,10);
++        auto* description=new wxStaticText(card,wxID_ANY,descriptions[i]);description->Wrap(260);card_layout->Add(description,1,wxEXPAND|wxALL,4);
++        card->SetSizer(card_layout);modes->Add(card,1,wxEXPAND|wxALL,6);
++    }
++    (*mode_buttons)[1]->SetValue(true);opt_layout->Add(modes,0,wxEXPAND|wxLEFT|wxRIGHT,14);
++    auto* actions=new wxBoxSizer(wxHORIZONTAL);
++    auto* slice=new wxButton(optimization,wxID_ANY,_L("Applica e slice"),wxDefaultPosition,wxSize(220,46));
++    actions->Add(slice,0,wxRIGHT,16);
++    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita, poi avvia lo slicing qui."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
++    opt_layout->Add(actions,0,wxEXPAND|wxALL,20);
++    auto* progress=new wxGauge(optimization,wxID_ANY,100,wxDefaultPosition,wxSize(-1,6));opt_layout->Add(progress,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* metrics=new wxStaticText(optimization,wxID_ANY,_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));
++    auto metric_font=metrics->GetFont();metric_font.SetPointSize(13);metric_font.SetWeight(wxFONTWEIGHT_BOLD);metrics->SetFont(metric_font);
++    opt_layout->Add(metrics,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* report=new wxTextCtrl(optimization,wxID_ANY,_L("Le assegnazioni e i risultati del piatto corrente compariranno qui.\nL'altezza layer considera solo i tool usati. Supporti e pittura mantengono le assegnazioni esistenti."),wxDefaultPosition,wxSize(-1,160),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
++    opt_layout->Add(report,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);optimization->SetSizer(opt_layout);
++    layout->Add(book,1,wxEXPAND|wxALL,8);dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1000,760));dialog->SetMinSize(wxSize(920,700));
++    wxGetApp().UpdateDlgDarkUI(dialog);
++    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
++    struct SliceState {bool pending=false;bool seen_running=false;bool displayed=false;int plate=-1;int mode=-1;int idle_ticks=0;};
++    auto state=std::make_shared<SliceState>();
++    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,clear_metrics,progress_text,report](wxCommandEvent&){
++        *selection=i;for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==i);
++        if(state->mode!=i){clear_metrics();report->SetValue(_L("La nuova modalita non e ancora applicata. Assegnazioni e risultati saranno aggiornati insieme allo slicing."));progress_text->SetLabel(_L("Modalita cambiata. Premi Applica e slice per aggiornare i risultati."));state->displayed=false;}
++    });
 +    auto painted=std::make_shared<std::string>();
-+    auto refresh=[status,tools,filaments,painted]() {
++    auto refresh=[status,tools,painted]() {
 +        try {
 +            const auto raw=wxGetApp().app_config->get("indx_printer_snapshot");auto remote=raw.empty()?Json::object():Json::parse(raw);
 +            const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-+            const bool current=remote.value("host",std::string())==host_url() && now-remote.value("observed_at",int64_t(0))<=60;
-+            if(!current)remote=Json::object();
++            if(remote.value("host",std::string())!=host_url() || now-remote.value("observed_at",int64_t(0))>60)remote=Json::object();
 +            const auto signature=remote.dump()+nozzle_setup().dump();if(signature==*painted)return;*painted=signature;
-+            status->SetLabel(!remote.value("online",false)?_L("INDX 0.3.0-preview - dati stampante non disponibili o da aggiornare"):
-+                wxString::Format(_L("INDX 0.3.0-preview - Klipper: %s - montaggio dichiarato: %d tool"),wxString::FromUTF8(remote.value("state",std::string())),int(remote.value("hardware",Json::object()).value("tools",Json::array()).size())));
++            status->SetLabel(!remote.value("online",false)?_L("Dati stampante non disponibili o da aggiornare. Puoi preparare lo slicing offline."):
++                wxString::Format(_L("Klipper: %s\nTool dichiarati sulla stampante: %d"),wxString::FromUTF8(remote.value("state",std::string())),int(remote.value("hardware",Json::object()).value("tools",Json::array()).size())));
 +            auto hardware=Indx::confirmed_tools(remote);const bool declared=!hardware.empty();if(!declared)hardware=nozzle_setup();
 +            const auto geometry=remote.value("geometry",Json::object());const auto offsets=remote.value("offsets",Json::object());
-+            const auto assignments=remote.value("assignments",Json::object());const auto library=remote.value("library",Json::object()).value("profiles",Json::object());
-+            tools->Freeze();filaments->Freeze();tools->DeleteAllItems();filaments->DeleteAllItems();
++            tools->Freeze();tools->DeleteAllItems();
 +            auto number=[](const Json& object,const std::string& key){const auto v=object.value(key,Json());return v.is_number()?wxString::Format("%.3f",v.get<double>()):wxString("--");};
-+            for(const auto& n:hardware) {
-+                const int t=n.at("tool").get<int>();const auto key=std::to_string(t);const auto prefix="t"+key;
++            for(const auto& n:hardware){
++                const int t=n.at("tool").get<int>();const auto prefix="t"+std::to_string(t);
 +                const long row=tools->InsertItem(tools->GetItemCount(),wxString::Format("T%d",t));
++                tools->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
 +                tools->SetItem(row,1,number(n,"diameter"));tools->SetItem(row,2,n.at("type")=="cht"?"CHT":_L("Standard"));
 +                tools->SetItem(row,3,declared?number(geometry,prefix+"_x"):"--");tools->SetItem(row,4,declared?number(geometry,prefix+"_dock_y"):"--");
 +                int c=5;for(const char* axis:{"x","y","z"})tools->SetItem(row,c++,declared?number(offsets,prefix+"_offset_"+axis):"--");
-+                const auto assigned=assignments.value(key,Json::object());const auto record=library.value(assigned.value("library_id",std::string()),Json::object());
-+                const long f=filaments->InsertItem(filaments->GetItemCount(),wxString::Format("T%d",t));
-+                filaments->SetItem(f,1,wxString::FromUTF8(record.value("name",std::string())));filaments->SetItem(f,2,wxString::FromUTF8(record.value("color",std::string())));
-+                filaments->SetItem(f,3,record.empty()?"--":wxString::Format("%d / %d",record.value("temp",0),record.value("bed",0)));
-+                const auto signature=nozzle_key(t,n);const auto cal=record.value("calibration_variants",Json::object()).value(signature,Json::object());
-+                const auto settings=record.value("settings_variants",Json::object()).value(signature,Json::object());const auto states=Indx::calibration_states(record,cal,settings);
-+                c=4;for(const std::string kind:{"pa","flow","max_flow"}) {
-+                    const auto state=states.at(kind).at("state");
-+                    const auto value=state=="verified"?number(cal,kind)+" "+_L("verificato"):state=="stale"?_L("da rifare"):state=="estimated"?_L("stimato"):_L("da calibrare");
-+                    filaments->SetItem(f,c++,value);
-+                }
 +            }
-+            tools->Thaw();filaments->Thaw();
-+        }catch(const std::exception& e){if(tools->IsFrozen())tools->Thaw();if(filaments->IsFrozen())filaments->Thaw();status->SetLabel(wxString::FromUTF8(e.what()));}
++            tools->Thaw();
++        }catch(const std::exception& e){if(tools->IsFrozen())tools->Thaw();status->SetLabel(wxString::FromUTF8(e.what()));}
 +    };
-+    read->Bind(wxEVT_BUTTON,[dialog,status,refresh](wxCommandEvent&){
-+        const auto url=host_url();auto task=std::async(std::launch::async,[url](){return read_printer(url);});
-+        wxProgressDialog progress(_L("INDX"),_L("Leggo stampante, montaggio e profili..."),100,dialog,wxPD_APP_MODAL|wxPD_AUTO_HIDE);
-+        while(task.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready){progress.Pulse();wxMilliSleep(30);}
-+        auto remote=task.get();progress.Update(100);wxGetApp().app_config->set("indx_printer_snapshot",remote.dump());refresh();
-+    });
 +    sync->Bind(wxEVT_BUTTON,[dialog,sync_result,refresh](wxCommandEvent&){synchronize_indx_filaments(dialog,sync_result);refresh();});
-+    inspect->Bind(wxEVT_BUTTON,[dialog,report](wxCommandEvent&){auto* p=wxGetApp().plater();p->update(false,true);check_indx_printer(dialog,p->get_partplate_list().get_current_fff_print(),false,{},report);});
-+    propose->Bind(wxEVT_BUTTON,[dialog,report,style](wxCommandEvent&){auto* p=wxGetApp().plater();p->update(false,true);suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),style->GetSelection(),report);});
++    read->Bind(wxEVT_BUTTON,[dialog,status,refresh](wxCommandEvent&){
++        try{
++            const auto url=host_url();auto task=std::async(std::launch::async,[url](){return read_printer(url);});
++            wxProgressDialog progress(_L("INDX"),_L("Leggo il montaggio dalla stampante..."),100,dialog,wxPD_APP_MODAL|wxPD_AUTO_HIDE);
++            while(task.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready){progress.Pulse();wxMilliSleep(30);}
++            auto remote=task.get();progress.Update(100);wxGetApp().app_config->set("indx_printer_snapshot",remote.dump());refresh();
++        }catch(const std::exception& e){status->SetLabel(wxString::FromUTF8(e.what()));}
++    });
++    slice->Bind(wxEVT_BUTTON,[dialog,report,selection,state,clear_metrics,progress_text](wxCommandEvent&){
++        auto* p=wxGetApp().plater();
++        if(p->is_background_process_slicing() || p->is_export_gcode_scheduled()){progress_text->SetLabel(_L("Attendi la fine dello slicing o dell'esportazione in corso."));return;}
++        auto* plate=p->get_partplate_list().get_curr_plate();
++        clear_metrics();report->Clear();state->displayed=false;
++        if(!plate || !plate->has_printable_instances()){progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
++        p->update(false,true);
++        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report)){
++            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
++        }
++        state->plate=plate->get_index();state->mode=*selection;state->pending=true;state->seen_running=false;state->idle_ticks=0;
++        progress_text->SetLabel(_L("Preparazione dello slicing..."));
++        // Reuse Orca's native validation and background worker without switching views.
++        p->reslice();
++    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[refresh,timer](wxTimerEvent&){refresh();},id);timer->Start(5000);refresh();dialog->Show();
++    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,progress,progress_text,metrics,clear_metrics](wxTimerEvent&) {
++        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
++        slice->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
++        if(!state->pending){
++            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
++                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Premi Applica e slice per aggiornare i risultati."));
++            }
++            return;
++        }
++        if(!plate || plate->get_index()!=state->plate){state->pending=false;clear_metrics();progress_text->SetLabel(_L("Piatto cambiato: avvia lo slicing del piatto selezionato."));return;}
++        if(busy){
++            state->seen_running=true;state->idle_ticks=0;
++            const int percent=std::clamp(int(plate->get_slicing_percent()),0,100);progress->SetValue(percent);
++            progress_text->SetLabel(wxString::Format(_L("Slicing del piatto corrente: %d%%"),percent));return;
++        }
++        if(p->is_background_process_update_scheduled())return;
++        // A fast slice can finish between ticks. Require native validity plus a
++        // non-empty exported time; never display an unfinished/old Print's statistics.
++        if(plate->is_slice_result_valid() && plate->fff_print() && !plate->fff_print()->print_statistics().estimated_normal_print_time.empty()){
++            const auto& stats=plate->fff_print()->print_statistics();
++            metrics->SetLabel(wxString::Format(_L("Tempo stimato: %s     Materiale: %.1f g     Cambi tool: %d"),wxString::FromUTF8(stats.estimated_normal_print_time),stats.total_weight,stats.total_toolchanges));
++            progress->SetValue(100);progress_text->SetLabel(_L("Slicing completato. Risultati del piatto corrente."));state->displayed=true;state->pending=false;
++        }else if(state->seen_running || ++state->idle_ticks>=6){
++            state->pending=false;clear_metrics();progress_text->SetLabel(_L("Slicing non completato. Controlla le notifiche di Orca, correggi il problema e riprova qui."));
++        }
++    },id);
++    timer->Start(500);refresh();dialog->Show();
 +}
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
 new file mode 100644
-index 00000000..2768a7f4
+index 00000000..3a986109
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.hpp
 @@ -0,0 +1,16 @@
@@ -1461,7 +1546,7 @@ index 00000000..2768a7f4
 +bool is_indx_profile();
 +void refresh_indx_preflight(const Print& print);
 +bool check_indx_printer(wxWindow* parent, const Print& print, bool sending = false, const std::string& target = {}, wxTextCtrl* output = nullptr);
-+void suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr);
++bool suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr);
 +} }
 diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
 index ae0c0c46..fbbd6660 100644

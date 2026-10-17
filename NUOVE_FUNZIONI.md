@@ -4,7 +4,7 @@
 
 In KlipperScreen aprire INDX. I pulsanti **Tool e dock, Filamenti, PA, Flow, Portata, Collaudo, Tool attivo** cambiano il contenuto della stessa area. Le schede T0, T1 e successive selezionano il tool da modificare. Standard/CHT e direzione dock sono interruttori diretti.
 
-In Orca il pulsante **INDX** apre uno spazio unico con tre pulsanti di selezione: **Stampante e tool**, **Filamenti e calibrazioni**, **Controlli**. Non c'e un secondo editor connessione INDX: viene usata la connessione della stampante configurata nella sezione superiore di Orca. Le connessioni della preview precedente restano utilizzabili durante la migrazione.
+In Orca il pulsante **INDX** apre uno spazio unico con tre pulsanti di selezione: **Info INDX**, **Config tool**, **Auto slicing optimization**. Non c'e un secondo editor connessione INDX: viene usata la connessione della stampante configurata nella sezione superiore di Orca. Le connessioni della preview precedente restano utilizzabili durante la migrazione.
 
 ## Aggiungere tool, dock e offset
 
@@ -23,7 +23,7 @@ Gli offset sono i valori assoluti Klipper del tool, non incrementi. Sono registr
 
 Orca importa automaticamente numero, diametri, Standard/CHT e fattore CHT dalla dichiarazione confermata del touchscreen, circa ogni 15 secondi oltre alla rete. Attende durante modifiche non salvate ai profili, slicing/export e finestre modali. Risposte incomplete, offline o di una connessione precedente non ridimensionano il profilo. Le copie precedenti del profilo stampante sono conservate in `indx-profile-backups`.
 
-In **Filamenti e calibrazioni**, **Sincronizza filamenti nel progetto** importa le assegnazioni nel piatto corrente e i parametri del profilo personale: colore, temperature, PA, flow e portata. Chiede conferma se una copia generata e stata modificata localmente. Salvare il progetto e rislicera dopo i cambi; il G-code gia esportato non cambia.
+In **Config tool**, **Sincronizza filamenti nel progetto** importa le assegnazioni nel piatto corrente e i parametri del profilo personale: colore, temperature, PA, flow e portata. Chiede conferma se una copia generata e stata modificata localmente. Salvare il progetto e rislicera dopo i cambi; il G-code gia esportato non cambia.
 
 ## Filamenti e calibrazioni
 
@@ -35,7 +35,7 @@ PA, flow e portata richiedono il test corrispondente completato prima del salvat
 
 **Controlla il piatto corrente** legge uno stato nuovo e confronta i tool effettivamente usati. Tool montati ma inutilizzati non impongono il limite di layer. L'invio INDX controllato resta limitato al piatto corrente tramite stampante fisica Moonraker; offline slicing/export sono disponibili, ma un file esportato separatamente non e certificato dal controllo.
 
-In **Controlli**, i selettori **Dettaglio, Equilibrato, Veloce** applicano una proposta in un processo separato. Materiali diversi e override locali richiedono assegnazioni manuali. Pareti da 0,20 mm e infill da 0,80 mm possono usare base 0,14 mm e accorpamento infill 0,56 mm dove la geometria lo consente. L'altezza segue i tool usati; non aumenta una richiesta piu fine. In anteprima usare Altezza strato e le proprieta del movimento selezionato.
+In **Auto slicing optimization**, i selettori **Dettaglio, Equilibrato, Veloce** applicano una proposta in un processo separato. Materiali diversi e override locali richiedono assegnazioni manuali. Pareti da 0,20 mm e infill da 0,80 mm possono usare base 0,14 mm e accorpamento infill 0,56 mm dove la geometria lo consente. L'altezza segue i tool usati; non aumenta una richiesta piu fine. In anteprima usare Altezza strato e le proprieta del movimento selezionato.
 
 ## Backup e guide
 
@@ -56,3 +56,12 @@ Se manca il filamento per un ugello fine montato, la proposta lo segnala anziche
 ## Veloce: ugello maggiore per tutte le funzioni proposte
 
 Veloce assegna pareti, superfici e riempimento al maggiore ugello disponibile tra i filamenti associati. Con 0,6/0,4/0,6/0,8 usa T3 da 0,8 per tutte queste funzioni. Dettaglio resta 0,4/0,8 ed Equilibrato 0,6/0,8. I supporti e le parti dipinte mantengono le assegnazioni esplicite esistenti. Il limite Z continua a dipendere dai tool effettivamente usati e non aumenta una richiesta di layer piu fine.
+
+
+## Workspace INDX e slicing nella stessa pagina
+
+I tre pulsanti principali sono Info INDX, Config tool e Auto slicing optimization. La home presenta solo le informazioni INDX; non contiene risultati di slicing o parametri di calibrazione. Config tool mostra il montaggio ricevuto dal touchscreen e conserva il comando di sincronizzazione filamenti senza la tabella delle calibrazioni.
+
+In Auto slicing optimization scegli Dettaglio, Equilibrato o Veloce e premi **Applica e slice**. Il comando applica la proposta e avvia il motore nativo Orca senza chiudere la finestra o cambiare pagina. La stessa area mostra avanzamento, assegnazioni, tempo stimato, materiale e cambi tool. Rilanciare la stessa proposta riusa il processo; un profilo modificato non viene sovrascritto.
+
+Il cambio modalita nasconde i risultati precedenti. Serve un nuovo calcolo per conoscere i tempi della nuova combinazione; il pulsante lo gestisce direttamente qui. Piatto cambiato o risultato invalidato nascondono le metriche. Eventuali errori nativi restano nelle notifiche Orca e il pannello invita a correggere e riprovare. Nessuna stampa viene avviata dal pulsante di slicing.
