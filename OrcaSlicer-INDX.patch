@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..c232dab3
+index 00000000..a4d282a3
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,60 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -83,6 +83,9 @@ index 00000000..c232dab3
 +Entering optimization queues the three native slices once idle; the manual action reruns them. The current outer-wall assignment (slot 1 if automatic) defines the primary material. For each mode the workspace first slices the primary-material proposal, then every larger foreign-material infill candidate. Support-designated and unknown materials are excluded. Walls and solids remain primary. Only a valid positive saving at displayed whole-second resolution can produce a proposal; the fastest successful candidate is selected and the dialog shows both complete estimates, saved time/percentage and signed tool-change delta. Compatibility is never inferred from material names. The default is No. Acceptance or refusal is followed by a final slice of the chosen variant, whose statistics alone populate the mode table.
 +
 +Trial phases retain a primary preset for restoration. Native errors or invalid estimates cannot generate a recommendation; failed trials restore the baseline. Project inputs are disabled while trials run; input changes invalidate the comparison and restore the primary process instead of accepting stale timing. A modal-choice guard prevents timer reentry. Closing waits until temporary trials and final restoration finish. No printer command is sent by this workflow. Homogeneous proposals retain the three-mode behavior without extra candidate trials.
++
++
++The material decision is aggregated: all three primary and alternative measurements complete before a single dialog lists time savings and signed tool-change deltas. Only modes with a positive saving receive an alternative on acceptance; decline keeps all primary variants. Decisions survive mode changes within the unchanged workspace and are reset by input invalidation or an explicit full comparison. Partial results cannot produce the decision. The GTK filament picker derives brand and material filters from the compatible source catalogue and personal library. Product metadata is selected rather than typed; a modal naming step precedes assignment, and cancellation does not write the library. Stable library identity is preserved on rename and recall.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -160,10 +163,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..b9c483bb
+index 00000000..0ee6adb2
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,209 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -260,6 +263,19 @@ index 00000000..b9c483bb
 +inline int64_t material_time_saving(double baseline,double alternative) {
 +    if(!std::isfinite(baseline) || !std::isfinite(alternative) || baseline<=0. || alternative<=0. || baseline>1.e12 || alternative>1.e12)return 0;
 +    return std::max<int64_t>(0,static_cast<int64_t>(baseline)-static_cast<int64_t>(alternative));
++}
++
++// A single decision requires all three completed measurements. A slower or
++// invalid alternative never becomes an approved mode, even if another wins.
++inline std::vector<int> material_comparison_choices(const Json& rows) {
++    if(!rows.is_array() || rows.size()!=3)return {};
++    std::vector<int> choices;
++    for(const auto& row:rows){
++        if(!row.value("valid",false))return {};
++        const int filament=row.value("filament",0);
++        choices.push_back(filament>0 && material_time_saving(row.value("baseline",0.),row.value("alternative",0.))>0?filament:0);
++    }
++    return choices;
 +}
 +
 +inline Json material_proposal(const Json& candidates,const std::string& style,const Json& mounted,int primary_filament) {
@@ -504,10 +520,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..0b3a3de4
+index 00000000..39afd758
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1245 @@
+@@ -0,0 +1,1298 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -1515,7 +1531,11 @@ index 00000000..0b3a3de4
 +        std::string context;
 +        std::vector<Result> results=std::vector<Result>(3);
 +        std::vector<int> queue;
-+        // Each mode measures the baseline and every candidate before asking.
++        struct MaterialResult {bool valid=false;Result baseline,best;Json candidate;};
++        std::vector<MaterialResult> materials=std::vector<MaterialResult>(3);
++        std::vector<int> choices=std::vector<int>(3,0);
++        bool collecting=false;bool applying=false;
++        // Collect all three modes before a single material decision.
 +        int phase=0;size_t candidate=0;int best_filament=0;int approved_filament=0;
 +        bool choosing=false;bool trial_failed=false;
 +        Json alternatives=Json::array();
@@ -1576,7 +1596,8 @@ index 00000000..0b3a3de4
 +        }
 +        comparison->Thaw();
 +    };
-+    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;draw_comparison();};
++    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;
++        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);draw_comparison();};
 +    draw_comparison();
 +    auto painted=std::make_shared<std::string>();
 +    auto refresh=[status,tools,painted]() {
@@ -1621,7 +1642,10 @@ index 00000000..0b3a3de4
 +            state->context=context();clear_metrics();
 +            progress_text->SetLabel(_L("Il progetto e cambiato: ricalcola prima di scegliere un materiale alternativo."));return;
 +        }
-+        if(!continuation){state->phase=0;state->candidate=0;state->best_filament=0;state->approved_filament=0;state->alternatives=Json::array();state->trial_failed=false;}
++        if(!continuation){
++            state->phase=state->collecting?0:2;state->candidate=0;state->best_filament=0;
++            state->approved_filament=state->choices[*selection];state->alternatives=Json::array();state->trial_failed=false;
++        }
 +        auto* plate=p->get_partplate_list().get_curr_plate();
 +        if(state->context!=context())invalidate_comparison();
 +        state->results[*selection].valid=false;draw_comparison();
@@ -1644,24 +1668,29 @@ index 00000000..0b3a3de4
 +        p->reslice();
 +        state->context=context();
 +    };
-+    slice->Bind(wxEVT_BUTTON,[run_slice](wxCommandEvent&){run_slice();});
 +    auto run_comparison=[selection,state,mode_buttons,run_slice,compare_on_open](){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
 +        *compare_on_open=false;
++        state->collecting=true;state->applying=false;
++        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);
 +        state->queue.clear();for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
 +        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
 +        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
 +    };
 +    compare->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
-+    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice](wxCommandEvent&){
++    slice->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
++    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice,run_comparison,context](wxCommandEvent&){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
 +            for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==*selection);return;
 +        }
 +        const bool changed=*selection!=i;
 +        *selection=i;for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==i);
-+        if(changed || state->mode!=i || !state->displayed)run_slice();
++        if(changed || state->mode!=i || !state->displayed){
++            if(state->context==context() && std::all_of(state->materials.begin(),state->materials.end(),[](const SliceState::MaterialResult& r){return r.valid;}))run_slice();
++            else run_comparison();
++        }
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
 +    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book](wxTimerEvent&) {
@@ -1707,32 +1736,22 @@ index 00000000..0b3a3de4
 +                const SliceState::Result measured={true,wxString::FromUTF8(stats.estimated_normal_print_time),seconds,stats.total_weight,stats.total_toolchanges};
 +                if(state->phase==0){
 +                    state->baseline=measured;state->best=measured;
++                    state->materials[state->mode]={true,measured,measured,Json()};
 +                    if(!state->alternatives.empty()){
 +                        state->phase=1;state->candidate=0;state->pending=false;run_slice(true);return;
 +                    }
 +                }else if(state->phase==1){
-+                    if(Indx::material_time_saving(state->best.seconds,measured.seconds)>0){
++                    if(state->best_filament==0 || measured.seconds<state->best.seconds){
 +                        state->best=measured;state->best_filament=state->alternatives.at(state->candidate).at("filament").get<int>();
 +                    }
 +                    if(++state->candidate<state->alternatives.size()){
 +                        state->pending=false;run_slice(true);return;
 +                    }
-+                    if(state->best_filament>0){
-+                        const auto found=std::find_if(state->alternatives.begin(),state->alternatives.end(),[state](const Json& c){return c.at("filament")==state->best_filament;});
-+                        const auto saved=Indx::material_time_saving(state->baseline.seconds,state->best.seconds);
-+                        const int change_delta=state->best.changes-state->baseline.changes;
-+                        state->choosing=true;
-+                        // A modal dialog pumps timer events: choosing prevents reentry.
-+                        const auto answer=wxMessageBox(wxString::Format(_L("%s: il materiale alternativo riduce il tempo stimato.\n\nProfilo: %s\nTool T%d, ugello %.2f mm\nSenza alternativa: %s, cambi tool %d\nCon alternativa: %s, cambi tool %d\nRisparmio: %lld min %lld s (%.1f%%)\nVariazione cambi tool: %+d\n\nUsarlo per il solo riempimento sparso? Pareti e superfici mantengono il materiale principale. Conferma solo se hai verificato adesione, temperature e piano per questi materiali. La compatibilita fisica non viene dedotta dal nome."),
-+                            labels[state->mode],wxString::FromUTF8(found->at("name").get<std::string>()).Left(70),found->at("tool").get<int>(),found->at("diameter").get<double>(),
-+                            state->baseline.time,state->baseline.changes,state->best.time,state->best.changes,
-+                            static_cast<long long>(saved/60),static_cast<long long>(saved%60),100.*double(saved)/state->baseline.seconds,change_delta),
-+                            _L("Riempimento alternativo: risparmio verificato"),wxYES_NO|wxNO_DEFAULT|wxICON_QUESTION,dialog);
-+                        state->choosing=false;
-+                        if(answer==wxYES)state->approved_filament=state->best_filament;
-+                    }
-+                    // Always restore and slice the accepted variant, never leave
-+                    // the last temporary trial active after a declined proposal.
++                    Json candidate;
++                    for(const auto& c:state->alternatives)if(c.at("filament")==state->best_filament)candidate=c;
++                    state->materials[state->mode]={true,state->baseline,state->best,candidate};
++                    // Restore the primary variant while the remaining modes are
++                    // measured. No unapproved trial is a final table result.
 +                    state->phase=2;state->pending=false;run_slice(true);return;
 +                }
 +                state->results[state->mode]=measured;draw_comparison();
@@ -1743,7 +1762,57 @@ index 00000000..0b3a3de4
 +            if(!state->queue.empty()){
 +                *selection=state->queue.front();state->queue.erase(state->queue.begin());
 +                for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
-+            }
++            }else if(state->collecting){
++                state->collecting=false;
++                Json measurements=Json::array();
++                for(const auto& r:state->materials)measurements.push_back({{"valid",r.valid},{"baseline",r.baseline.seconds},{"alternative",r.best.seconds},{"filament",r.candidate.is_null()?0:r.candidate.at("filament").get<int>()}});
++                const auto eligible=Indx::material_comparison_choices(measurements);
++                const bool complete=eligible.size()==3;
++                const bool benefit=std::any_of(eligible.begin(),eligible.end(),[](int filament){return filament>0;});
++                if(complete && benefit){
++                    state->choosing=true;
++                    wxDialog choice(dialog,wxID_ANY,_L("Materiale alternativo: confronto delle tre modalita"));
++                    auto* content=new wxBoxSizer(wxVERTICAL);
++                    auto* note=new wxStaticText(&choice,wxID_ANY,_L("Confronto completato. Usare le alternative solo nelle modalita in cui riducono il tempo stimato? Pareti e superfici mantengono il materiale principale."));
++                    note->Wrap(960);content->Add(note,0,wxEXPAND|wxALL,16);
++                    auto* rows=new wxListCtrl(&choice,wxID_ANY,wxDefaultPosition,wxSize(980,138),wxLC_REPORT|wxLC_SINGLE_SEL);
++                    const wxString headings[]={_L("Modalita"),_L("Senza alternativa"),_L("Con alternativa"),_L("Risparmio"),_L("Cambi aggiunti"),_L("Alternativa infill")};
++                    const int widths[]={100,145,145,170,110,290};
++                    for(int c=0;c<6;++c)rows->InsertColumn(c,headings[c],wxLIST_FORMAT_LEFT,widths[c]);
++                    for(int i=0;i<3;++i){
++                        const auto& r=state->materials[i];const auto saving=Indx::material_time_saving(r.baseline.seconds,r.best.seconds);
++                        const long row=rows->InsertItem(i,labels[i]);
++                        rows->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
++                        rows->SetItem(row,1,r.baseline.time);rows->SetItem(row,2,r.best.time);
++                        rows->SetItem(row,3,saving>0?wxString::Format(_L("%lld min %lld s (%.1f%%)"),static_cast<long long>(saving/60),static_cast<long long>(saving%60),100.*double(saving)/r.baseline.seconds):_L("Non conviene"));
++                        rows->SetItem(row,4,wxString::Format("%+d",r.best.changes-r.baseline.changes));
++                        rows->SetItem(row,5,r.candidate.is_null()?_L("Mantieni originale"):wxString::Format(_L("T%d %.2f mm: %s"),r.candidate.at("tool").get<int>(),r.candidate.at("diameter").get<double>(),wxString::FromUTF8(r.candidate.at("name").get<std::string>()).Left(42)));
++                    }
++                    content->Add(rows,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
++                    auto* warning=new wxStaticText(&choice,wxID_ANY,_L("Conferma solo se hai verificato adesione, temperature e piano per i materiali proposti. Il software non certifica la compatibilita fisica. Le modalita senza vantaggio mantengono il materiale originale."));
++                    warning->Wrap(960);content->Add(warning,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
++                    auto* actions=new wxBoxSizer(wxHORIZONTAL);
++                    auto* keep=new wxButton(&choice,wxID_NO,_L("Mantieni materiali originali"));
++                    auto* accept=new wxButton(&choice,wxID_YES,_L("Usa alternative convenienti"));
++                    actions->AddStretchSpacer();actions->Add(keep,0,wxRIGHT,12);actions->Add(accept);
++                    content->Add(actions,0,wxEXPAND|wxALL,16);
++                    keep->Bind(wxEVT_BUTTON,[&choice](wxCommandEvent&){choice.EndModal(wxID_NO);});
++                    accept->Bind(wxEVT_BUTTON,[&choice](wxCommandEvent&){choice.EndModal(wxID_YES);});
++                    keep->SetDefault();choice.SetEscapeId(wxID_NO);choice.SetSizerAndFit(content);wxGetApp().UpdateDlgDarkUI(&choice);
++                    const auto answer=choice.ShowModal();state->choosing=false;
++                    if(state->context!=context()){
++                        invalidate_comparison();state->context=context();clear_metrics();
++                        progress_text->SetLabel(_L("Il progetto e cambiato: ricalcola il confronto."));return;
++                    }
++                    if(answer==wxID_YES){
++                        state->applying=true;
++                        state->choices=eligible;
++                        for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
++                        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
++                        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++                    }
++                }
++            }else state->applying=false;
 +        }else if(state->seen_running || ++state->idle_ticks>=6){
 +            state->pending=false;state->queue.clear();
 +            if(state->phase==1){state->phase=2;state->approved_filament=0;state->trial_failed=true;run_slice(true);return;}
@@ -2157,10 +2226,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..0acb352d
+index 00000000..7cebf5e9
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,245 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -2387,6 +2456,24 @@ index 00000000..0acb352d
 +    const double invalid=GENERATE(0.,-1.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN(),1.e13);
 +    CHECK(material_time_saving(invalid,100.)==0);
 +    CHECK(material_time_saving(100.,invalid)==0);
++}
++
++TEST_CASE("A single material decision waits for three modes and accepts only beneficial alternatives", "[IndxChecks][MaterialBenefit]") {
++    Json rows=Json::array();
++    CHECK(material_comparison_choices(rows).empty());
++    for(int i=0;i<2;++i){
++        rows.push_back({{"valid",true},{"baseline",1000.},{"alternative",800.},{"filament",4}});
++        CHECK(material_comparison_choices(rows).empty());
++    }
++    rows.push_back({{"valid",true},{"baseline",1000.},{"alternative",1200.},{"filament",5}});
++    CHECK(material_comparison_choices(rows)==std::vector<int>{4,4,0});
++    rows[1]["valid"]=false;CHECK(material_comparison_choices(rows).empty());
++    rows[1]["valid"]=true;rows[1]["alternative"]=1000.;
++    CHECK(material_comparison_choices(rows)==std::vector<int>{4,0,0});
++    rows[0]["filament"]=0;
++    CHECK(material_comparison_choices(rows)==std::vector<int>{0,0,0});
++    rows[0]["filament"]=4;rows[0]["alternative"]=0.;
++    CHECK(material_comparison_choices(rows)==std::vector<int>{0,0,0});
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

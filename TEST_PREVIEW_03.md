@@ -110,3 +110,15 @@ UI isolata senza connessione alla stampante: fixture con PLA su 0,6/0,4/0,6 e un
 Nessun invio, movimento, riscaldamento o flash. Gli aumenti di portata del fixture non sono profili da utilizzare sulla stampante reale.
 
 Verifica finale del pacchetto e installazione/rollback temporanei superata. Corretto anche un conflitto fra nomi backup su orologi a bassa risoluzione: le directory ora vengono create in modo univoco e atomico. Il test forza sette salvataggi con lo stesso timestamp. Nessun aggiornamento della stampante eseguito in questa verifica.
+
+
+## Riepilogo unico e filamenti da elenco
+
+Build Windows Release; 356 asserzioni IndxChecks in 15 casi, incluso blocco della decisione fino a tre risultati completi e scelta dei soli vantaggi. Matrice e regressioni FFF: 1434 asserzioni in 39 casi.
+
+UI reale su dati separati: nessuna domanda intermedia; riepilogo con tre righe e variazioni cambi +0/+0/+242. Verificati accettazione delle sole alternative convenienti, mantenimento delle tre basi e riuso della scelta cambiando modalita. I dati e le portate dei fixture sono simulati, senza validita fisica.
+
+GTK reale sullo SPI-XI, con dati temporanei: elenchi dipendenti marca/materiale/profilo, filtri compatibilita e sorgente, annullamento senza scritture, nome alla conferma, assegnazione e rinomina con UUID stabile, richiamo del filamento e uso nel dashboard. Pannello installato con backup; libreria, assegnazioni, calibrazioni, hardware e configurazioni preservati e verificati con hash. Riavviato solo KlipperScreen; servizi attivi. Nessun movimento, riscaldamento o flash.
+
+
+Il test GTK e riproducibile senza contattare la stampante: estrarre touchscreen.zip, poi eseguire con Python GTK `test_filament_picker_gtk.py /percorso/touchscreen /percorso/KlipperScreen` in una sessione grafica. Usa soltanto dati temporanei e salva una schermata sintetica nella cartella touchscreen. La verifica non esegue test fisici.

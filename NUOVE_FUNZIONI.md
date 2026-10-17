@@ -78,10 +78,27 @@ Aprire **Auto slicing optimization** avvia automaticamente tre slicing nativi in
 
 Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa su ugello maggiore. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
 
-La richiesta compare solo se almeno un'alternativa ha un tempo totale inferiore alla precisione visualizzata (un secondo). Fra piu alternative viene proposta quella piu rapida. La richiesta mostra profilo/tool/diametro, tempo e cambi tool con e senza alternativa, risparmio in minuti/secondi e percentuale, e variazione firmata dei cambi tool. Sono stime native Orca dell'intero piatto, inclusi torre e cambi conteggiati dal motore, non una semplice proporzione fra diametri.
+Il riepilogo finale compare solo se almeno un'alternativa, in almeno una delle tre modalita, ha un tempo totale inferiore alla precisione visualizzata (un secondo). Fra piu alternative viene proposta quella piu rapida. La richiesta mostra profilo/tool/diametro, tempo e cambi tool con e senza alternativa, risparmio in minuti/secondi e percentuale, e variazione firmata dei cambi tool. Sono stime native Orca dell'intero piatto, inclusi torre e cambi conteggiati dal motore, non una semplice proporzione fra diametri.
 
-**Si** applica l'alternativa al solo infill; **No**, selezionato inizialmente, ripristina la variante principale. La versione scelta viene rislicerata prima di aggiornare la tabella. Alternative piu lente o equivalenti non generano richieste. Una prova fallita non giustifica una proposta e ripristina la base. Le scelte sono per modalita: un materiale puo convenire in Dettaglio e non in Veloce. Cambiare input invalida le misure; il confronto puo richiedere piu slicing della precedente versione. Durante le prove la modifica del progetto e la chiusura del pannello attendono il completamento, per non lasciare attiva una variante temporanea.
+La decisione viene raccolta una sola volta nel riepilogo finale: applica le alternative convenienti al solo infill oppure mantiene tutte le varianti principali. La versione scelta viene rislicerata prima di aggiornare la tabella. Alternative piu lente o equivalenti non generano richieste. Una prova fallita non giustifica una proposta e ripristina la base. Le scelte sono per modalita: un materiale puo convenire in Dettaglio e non in Veloce. Cambiare input invalida le misure; il confronto puo richiedere piu slicing della precedente versione. Durante le prove la modifica del progetto e la chiusura del pannello attendono il completamento, per non lasciare attiva una variante temporanea.
 
 Il vantaggio temporale non certifica compatibilita fisica: confermare solo dopo aver verificato adesione, temperature e piano per la coppia di materiali. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
 
 ![Risparmio e cambi tool nel fixture simulato](indx-materiale-risparmio-cambi.png)
+
+
+## Una sola richiesta alla fine delle tre modalita
+
+Orca completa prima tutte le prove base/alternativa di Dettaglio, Equilibrato e Veloce. Solo alla fine mostra un unico riepilogo con, per ciascuna modalita, tempo senza/con alternativa, risparmio in minuti/secondi e percentuale, cambi tool aggiunti e profilo/tool proposto. Le alternative piu lente sono indicate come Non conviene; se nessuna conviene non compare alcuna domanda.
+
+**Usa alternative convenienti** applica l'alternativa solo alle righe con vantaggio, poi ricalcola i risultati finali. **Mantieni materiali originali**, predefinito, conserva le tre basi. Cambiare modalita riusa la decisione finche gli input restano uguali; Ricalcola o Ricalcola confronto avviano una nuova valutazione completa. Chiudere il pannello o cambiare progetto/parametri invalida il riepilogo.
+
+![Riepilogo unico dei tre modi](indx-materiale-confronto-unico.png)
+
+## Filamenti sul touch: selezione dagli elenchi
+
+In Filamenti scegli il tool e Mostra (i tuoi filamenti oppure nuove basi Orca/personali). **Marca** e **Tipo materiale** sono elenchi ricavati dal catalogo compatibile sincronizzato e dalla libreria personale: selezionarli filtra **Profilo / prodotto**. Non si compilano a mano; la base selezionata resta leggibile. Se manca la marca, sincronizza il catalogo con Orca aperto; le basi Generic restano disponibili dove presenti nel catalogo.
+
+Imposta colore e condizioni, poi premi **Conferma filamento e scegli nome**. Il nome personale viene richiesto a quel punto: puoi accettare il suggerimento o rinominarlo e premere **Salva e assegna**. Annulla non scrive dati. Richiamare o rinominare un profilo personale mantiene la stessa identita e le calibrazioni valide. La lista iniziale mostra le basi se non hai ancora filamenti personali.
+
+![Selettori di marca, materiale e profilo su dati sintetici](klipperscreen-filamenti-elenchi.png)
