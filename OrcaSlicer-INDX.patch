@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..afbbfd04
+index 00000000..5bd55e04
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,45 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -64,9 +64,13 @@ index 00000000..afbbfd04
 +
 +Explicit operator attestations in the machine editor can persist and enable measured docks for controlled tests, then geometry/cleaning for printing after the first six ordered physical checklist steps. They require the loaded revision, matching runtime geometry and an active INDX head/load-cell configuration. Installs, automatic synchronization and the checklist itself never enable these gates. Pickup and park remain existing vendor macro calls with the standard movement confirmation.
 +
-+La proposta tool usa i preset correnti e la mappatura del piatto corrente, senza dipendere dalla fotografia Print del processo in background. Dettaglio richiede pareti con ugello fino a 0,4 mm e seleziona quello piu fine associato. Per Dettaglio ed Equilibrato un ugello montato piu fine ma senza filamento associato blocca la proposta: non viene sostituito silenziosamente con uno piu grande. I filamenti caricati e il materiale devono essere dichiarati, non dedotti dal solo montaggio.
++La proposta tool usa i preset correnti e la mappatura del piatto corrente, senza dipendere dalla fotografia Print del processo in background. Dettaglio richiede pareti con ugello fino a 0,4 mm e seleziona quello piu fine associato. Per Dettaglio un ugello montato piu fine ma senza filamento associato blocca la proposta: non viene sostituito silenziosamente con uno piu grande. I filamenti caricati e il materiale devono essere dichiarati, non dedotti dal solo montaggio.
 +
 +Se esiste almeno uno slot per ogni tool e tutti gli slot hanno tipo materiale e colore identici, la proposta completa automaticamente una mappatura predefinita vuota, tutta sul primo tool o gestita da una modalita automatica Orca con la corrispondenza slot/tool. La mappatura esplicita non predefinita viene preservata. Il cambio si applica al progetto e al piatto soltanto insieme alla proposta, dopo snapshot; non dichiara caricamenti fisici o calibrazioni. Tutti i tool diventano candidati, senza imporre l'uso ridondante di ugelli equivalenti.
++
++Le proposte mantengono il riempimento sparso sul maggiore ugello disponibile in ogni stile. Dettaglio sceglie il piu fine fino a 0,4 mm per pareti e superfici. Equilibrato sceglie il maggiore fino a 0,6 mm per pareti e superfici, ricadendo sul minore disponibile se nessuno rispetta tale soglia. Tra tool dello stesso diametro viene preferito il primo senza introdurre cambi ridondanti per le funzioni fini. La griglia Z dipende soltanto dai tool delle funzioni effettivamente usate; l'infill combinato resta limitato dal suo ugello.
++
++Il controllo di compatibilita materiale INDX consulta la capacita del primo feeder fisico condiviso, anziche interpretare T3 o T63 come estrusori fisici distinti. Una capacita materiale assente resta un blocco; per le altre stampanti restano le capacita per estrusore, con shift fuori intervallo respinti.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -144,10 +148,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..a3b7cc14
+index 00000000..85588637
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,165 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -155,6 +159,7 @@ index 00000000..a3b7cc14
 +#include <vector>
 +#include <algorithm>
 +#include <stdexcept>
++#include <limits>
 +
 +namespace Slic3r { namespace Indx {
 +using Json = nlohmann::json;
@@ -207,6 +212,13 @@ index 00000000..a3b7cc14
 +    return maps;
 +}
 +
++// Passive INDX tools share the first physical feeder/heater's material capability.
++inline bool filament_printable(unsigned int mask,int tool,bool shared) {
++    if(tool<0 || tool>=64)return false;
++    const int physical=shared?0:tool;
++    return physical<int(std::numeric_limits<unsigned int>::digits) && ((mask>>physical)&1u)!=0;
++}
++
 +inline Json propose_roles(Json candidates,const std::string& style,const Json& mounted=Json::array()) {
 +    if(candidates.empty())throw std::invalid_argument("no_candidates");
 +    if(style!="detail" && style!="balanced" && style!="speed")throw std::invalid_argument("invalid_style");
@@ -217,11 +229,13 @@ index 00000000..a3b7cc14
 +    if(style=="detail" && wall.at("diameter").get<double>()>.4001)
 +        throw std::invalid_argument("detail_no_fine_filament");
 +    // A missing filament assignment must not silently hide a finer mounted nozzle.
-+    if(style!="speed")for(const auto& tool:mounted)
++    if(style=="detail")for(const auto& tool:mounted)
 +        if(tool.at("diameter").get<double>()+.0001<wall.at("diameter").get<double>())
 +            throw std::invalid_argument("fine_tool_unassigned");
 +    if(style=="speed")for(const auto& c:candidates)if(c.at("diameter").get<double>()<=.4001)wall=c;
-+    const auto infill=style=="detail"?wall:candidates.back();
++    if(style=="balanced")for(const auto& c:candidates)
++        if(c.at("diameter").get<double>()<=.6001 && c.at("diameter").get<double>()>wall.at("diameter").get<double>()+.0001)wall=c;
++    const auto infill=candidates.back();
 +    return {{"wall",wall},{"solid",wall},{"infill",infill}};
 +}
 +
@@ -447,7 +461,7 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..ab9be797
+index 00000000..db49973e
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
 @@ -0,0 +1,974 @@
@@ -1021,7 +1035,7 @@ index 00000000..ab9be797
 +void suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
 +    if(!is_indx_printer())return;
 +    try {
-+        wxArrayString labels;labels.Add(_L("Dettaglio: ugello piu fine, massimo 0,4 mm per le pareti"));labels.Add(_L("Equilibrato: pareti fini, infill con ugello maggiore"));labels.Add(_L("Veloce: pareti fino a 0,4 mm, infill con ugello maggiore"));
++        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: pareti fino a 0,4 mm, infill con ugello maggiore"));
 +        wxSingleChoiceDialog choice(parent,_L("La proposta riguarda pareti, superfici e infill. Supporti e pittura mantengono le assegnazioni esistenti. Tempi e cambi effettivi sono disponibili dopo lo slicing."),_L("Proposta tool INDX"),labels);
 +        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return;style=choice.GetSelection();}
 +        auto& bundle=*wxGetApp().preset_bundle;
@@ -1447,6 +1461,29 @@ index 00000000..2768a7f4
 +bool check_indx_printer(wxWindow* parent, const Print& print, bool sending = false, const std::string& target = {}, wxTextCtrl* output = nullptr);
 +void suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr);
 +} }
+diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
+index ae0c0c46..fbbd6660 100644
+--- a/src/slic3r/GUI/PartPlate.cpp
++++ b/src/slic3r/GUI/PartPlate.cpp
+@@ -10,6 +10,7 @@
+ #include "libslic3r/Point.hpp"
+ #include "libslic3r/Config.hpp"
+ #include "libslic3r/PrintConfig.hpp"
++#include "libslic3r/IndxChecks.hpp"
+ #include "libslic3r/Line.hpp"
+ #include "libslic3r/Polyline.hpp"
+ #include "libslic3r/ExPolygon.hpp"
+@@ -3036,7 +3037,9 @@ bool PartPlate::check_filament_printable(const DynamicPrintConfig &config, wxStr
+             std::string filament_type = filament_types[filament_id];
+             int filament_printable_status = filament_printables[filament_id];
+             int extruder_idx = filament_map[filament_id] - 1;
+-            if (!(filament_printable_status >> extruder_idx & 1)) {
++            const auto* start=config.option<ConfigOptionString>("machine_start_gcode");
++            const bool shared_indx=start && start->value.find("INDX_PRINT_START")!=std::string::npos;
++            if (!Indx::filament_printable(static_cast<unsigned int>(filament_printable_status),extruder_idx,shared_indx)) {
+                 error_message = wxString::Format(extruder_idx == 0 ? _L("The left nozzle cannot print %s.") : _L("The right nozzle cannot print %s."),
+                                                  filament_type);
+                 return false;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
 index 6e4d3e34..52ddce97 100644
 --- a/src/slic3r/GUI/Plater.cpp
@@ -1717,10 +1754,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..fbb2568d
+index 00000000..1b75a84f
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,175 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -1760,9 +1797,9 @@ index 00000000..fbb2568d
 +    const Json candidates=Json::array({{{"filament",3},{"tool",7},{"diameter",.8},{"material","PLA"}},
 +        {{"filament",2},{"tool",0},{"diameter",.2},{"material","PLA"}},
 +        {{"filament",1},{"tool",4},{"diameter",.4},{"material","PLA"}}});
-+    CHECK(propose_roles(candidates,"balanced")["wall"]["filament"]==2);
++    CHECK(propose_roles(candidates,"balanced")["wall"]["filament"]==1);
 +    CHECK(propose_roles(candidates,"balanced")["infill"]["tool"]==7);
-+    CHECK(propose_roles(candidates,"detail")["infill"]["tool"]==0);
++    CHECK(propose_roles(candidates,"detail")["infill"]["tool"]==7);
 +    CHECK(propose_roles(candidates,"speed")["wall"]["tool"]==4);
 +    auto mixed=candidates;mixed[0]["material"]="PETG";
 +    CHECK_THROWS_AS(propose_roles(mixed,"balanced"),std::invalid_argument);
@@ -1843,12 +1880,11 @@ index 00000000..fbb2568d
 +    const auto candidate=[](int filament,int tool,double d){return Json{{"filament",filament},{"tool",tool},{"diameter",d},{"material","PLA"}};};
 +    const Json mounted=Json::array({{{"tool",0},{"diameter",.6}},{{"tool",1},{"diameter",.4}},{{"tool",2},{"diameter",.8}}});
 +    const Json mapped=Json::array({candidate(1,0,.6),candidate(2,1,.4),candidate(3,2,.8)});
-+    for(const std::string style:{"detail","balanced"}) {
-+        CHECK(propose_roles(mapped,style,mounted)["wall"]["tool"]==1);
-+        CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),style,mounted),std::invalid_argument);
-+    }
++    CHECK(propose_roles(mapped,"detail",mounted)["wall"]["tool"]==1);
++    CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),"detail",mounted),std::invalid_argument);
++    CHECK(propose_roles(mapped,"balanced",mounted)["wall"]["tool"]==0);
 +    CHECK(propose_roles(mapped,"detail",mounted)["solid"]["tool"]==1);
-+    CHECK(propose_roles(mapped,"detail",mounted)["infill"]["tool"]==1);
++    CHECK(propose_roles(mapped,"detail",mounted)["infill"]["tool"]==2);
 +    CHECK(propose_roles(mapped,"balanced",mounted)["infill"]["tool"]==2);
 +    CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),"detail"),std::invalid_argument);
 +    auto finer=mounted;finer.push_back({{"tool",3},{"diameter",.2}});
@@ -1870,6 +1906,32 @@ index 00000000..fbb2568d
 +    slots[3]["color"]="#00FF00";slots[3]["material"]="PETG";
 +    CHECK(proposal_mapping(slots,4,defaults)==defaults);
 +    slots.erase(slots.end()-1);CHECK(proposal_mapping(slots,4,defaults)==defaults);
++}
++
++
++TEST_CASE("Detail and balanced retain large nozzle infill with distinct wall targets", "[IndxChecks]") {
++    Json tools=Json::array();
++    const std::vector<double> diameters={.6,.4,.6,.8};
++    for(int t=0;t<4;++t)tools.push_back({{"filament",t+1},{"tool",t},{"diameter",diameters[t]},{"material","PLA"}});
++    const auto detail=propose_roles(tools,"detail",tools),balanced=propose_roles(tools,"balanced",tools);
++    CHECK(detail["wall"]["tool"]==1);CHECK(detail["solid"]["tool"]==1);CHECK(detail["infill"]["tool"]==3);
++    CHECK(balanced["wall"]["tool"]==0);CHECK(balanced["solid"]["tool"]==0);CHECK(balanced["infill"]["tool"]==3);
++    tools.push_back({{"filament",5},{"tool",4},{"diameter",.2},{"material","PLA"}});
++    CHECK(propose_roles(tools,"detail",tools)["wall"]["tool"]==4);
++    CHECK(propose_roles(tools,"detail",tools)["infill"]["tool"]==3);
++    CHECK(propose_roles(tools,"balanced",tools)["wall"]["tool"]==0);
++}
++
++
++TEST_CASE("Passive INDX tools use shared feeder material capability", "[IndxChecks]") {
++    const int tool=GENERATE(0,1,3,12,31,63);
++    CHECK(filament_printable(1u,tool,true));
++    CHECK_FALSE(filament_printable(0u,tool,true));
++    CHECK_FALSE(filament_printable(2u,tool,true));
++    CHECK(filament_printable(1u,tool,false)==(tool==0));
++    CHECK(filament_printable(2u,tool,false)==(tool==1));
++    CHECK_FALSE(filament_printable(1u,-1,true));
++    CHECK_FALSE(filament_printable(1u,64,true));
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

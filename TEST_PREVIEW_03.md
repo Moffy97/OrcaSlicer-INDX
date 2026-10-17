@@ -37,3 +37,17 @@ Prova GUI sul progetto con quattro slot PLA dello stesso colore e ugelli 0,6/0,4
 ![Proposta Dettaglio corretta](ottimizzazione-dettaglio-04.png)
 
 Elaborazione del progetto completata anche nell'anteprima Orca dopo l'applicazione della proposta; nessun invio alla stampante.
+
+
+## Dettaglio ed Equilibrato con riempimento multidiametro
+
+Build Windows Release riuscita; suite IndxChecks aggiornata: 263 asserzioni in 10 casi, ordine casuale. Con T0=0,6, T1=0,4, T2=0,6 e T3=0,8: Dettaglio assegna pareti e superfici a T1 e infill a T3; Equilibrato assegna pareti e superfici a T0 e infill a T3. Uno 0,2 disponibile viene preferito per Dettaglio, conservando infill da 0,8. Questo sostituisce il comportamento della prima prova Dettaglio con infill fine descritta sopra.
+
+Il controllo materiale riconosce il feeder INDX condiviso: T3 non viene scambiato per un estrusore fisico destro separato. Test su tool 0/1/3/12/31/63, capacita negate e indici invalidi; per le altre stampanti le capacita restano per estrusore. Nessuna modifica alle macro o ai gate di collaudo fisico.
+
+
+Verifica GUI aggiornata: entrambe le combinazioni confermate nel riepilogo. Nel 3MF Dettaglio salvato: pareti interne/esterne e superfici superiori filamento 2, infill filamento 4, mappatura 1/2/3/4. Slicing completato con filamenti 2 e 4 e cambi testa nel riepilogo; nessun invio alla macchina.
+
+![Dettaglio: 0,4 pareti e superfici, 0,8 infill](ottimizzazione-dettaglio-04-08.png)
+
+![Equilibrato: 0,6 pareti e superfici, 0,8 infill](ottimizzazione-equilibrato-06-08.png)
