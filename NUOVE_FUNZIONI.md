@@ -1,5 +1,9 @@
 # Preview 0.3.0 - interfaccia diretta e configurazione dalla stampante
 
+## Base di stampa più rapida
+
+Disponibile **0.20mm INDX - Base ottimizzata**: pareti 60/110 mm/s, infill 150, superfici superiori 50, travel 200; accelerazioni fino a 3000 mm/s². Primo strato, portata e PA conservati. Il collaudo fisico resta necessario. [Valori, confronto prima/dopo e importazione](PROFILO_BASE_OTTIMIZZATA.md).
+
 ## Un solo punto di inserimento
 
 In KlipperScreen aprire INDX. I pulsanti **Tool e dock, Filamenti, PA, Flow, Portata, Collaudo, Tool attivo** cambiano il contenuto della stessa area. Le schede T0, T1 e successive selezionano il tool da modificare. Standard/CHT e direzione dock sono interruttori diretti.

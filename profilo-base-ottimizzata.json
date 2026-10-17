@@ -1,0 +1,85 @@
+{
+  "bottom_surface_filament_id": "1",
+  "bridge_line_width": "0",
+  "compatible_printers": [
+    "Sovol SV08 MAX INDX 4T - DA COLLAUDARE"
+  ],
+  "default_acceleration": [
+    "3000"
+  ],
+  "from": "User",
+  "gap_infill_speed": [
+    "40"
+  ],
+  "infill_combination": "1",
+  "inherits": "0.20mm Standard @Sovol SV08 MAX 0.4 nozzle",
+  "initial_layer_infill_speed": [
+    "30"
+  ],
+  "initial_layer_line_width": "100%",
+  "initial_layer_print_height": "0.2",
+  "initial_layer_speed": [
+    "25"
+  ],
+  "inner_wall_acceleration": [
+    "3000"
+  ],
+  "inner_wall_filament_id": "1",
+  "inner_wall_line_width": "100%",
+  "inner_wall_speed": [
+    "110"
+  ],
+  "internal_bridge_speed": [
+    "40"
+  ],
+  "internal_solid_filament_id": "1",
+  "internal_solid_infill_line_width": "100%",
+  "internal_solid_infill_speed": [
+    "100"
+  ],
+  "line_width": "100%",
+  "name": "0.20mm INDX - Base ottimizzata",
+  "notes": "Base INDX ottimizzata per lo slicing: massimo 3000 mm/s2 e travel 200 mm/s entro i limiti del profilo. Primo strato e ponti conservati; portata e PA rimangono quelli dei filamenti. Valori di partenza non collaudati fisicamente. Usare solo dopo commissioning e input shaping del montaggio reale.",
+  "outer_wall_acceleration": [
+    "1500"
+  ],
+  "outer_wall_filament_id": "1",
+  "outer_wall_line_width": "100%",
+  "outer_wall_speed": [
+    "60"
+  ],
+  "print_extruder_id": [
+    "1"
+  ],
+  "print_extruder_variant": [
+    "Direct Drive Standard"
+  ],
+  "print_settings_id": "0.20mm INDX - Base ottimizzata",
+  "sparse_infill_filament_id": "4",
+  "sparse_infill_line_width": "100%",
+  "sparse_infill_speed": [
+    "150"
+  ],
+  "support_line_width": "100%",
+  "top_surface_acceleration": [
+    "1000"
+  ],
+  "top_surface_filament_id": "1",
+  "top_surface_line_width": "100%",
+  "top_surface_speed": [
+    "50"
+  ],
+  "travel_acceleration": [
+    "3000"
+  ],
+  "travel_speed": [
+    "200"
+  ],
+  "version": "2.4.0.1",
+  "sparse_infill_acceleration": [
+    "3000"
+  ],
+  "internal_solid_infill_acceleration": [
+    "2000"
+  ]
+}
