@@ -92,11 +92,20 @@ Quando si cambiano diametro o tipo, le calibrazioni precedenti restano archiviat
 
 L'altezza strato e il primo strato vengono adattati automaticamente in un processo INDX separato in base agli ugelli **usati nel piatto corrente**, includendo parti dipinte, assegnazioni per altezza, riempimento e supporti. La mappatura filamento/tool viene risolta prima del calcolo. Un ugello montato ma inutilizzato non limita la stampa. Il limite comune e il minore dei limiti dei tool usati (70% del diametro): se usi 0,20 e 0,80 mm, il layer base non supera 0,14 mm; usando solo 0,80 mm, il limite e 0,56 mm. Il limite e un massimo: non aumenta automaticamente una richiesta piu fine. Modificare il modello, i tool o gli ugelli ricalcola il limite e ripristina le altezze richieste quando possibile, se non cambiate manualmente. Il riempimento combinato somma le altezze dei layer base entro il limite del proprio tool, mantenendo le quote Z coordinate per tutta la stampa. Salvare e rielaborare lo slicing dopo i cambi.
 
+## Verifica software prima del kit
+
+[Rapporto della verifica completa INDX](VERIFICA_SOFTWARE_PRE_INDX.md): slicing e G-code, sincronizzazione reale, profili, GTK sullo SPI-XI, prestazioni e passi da collaudare dopo il montaggio.
+
 ## Materiali nell'ottimizzazione automatica
 
-In **Auto slicing optimization > Filamento principale** scegli il filamento del progetto. Pareti, superfici e riempimento vengono assegnati solo a tool dello stesso tipo di materiale. **ABS e PLA non vengono combinati**, anche quando la variante sarebbe piu veloce. Un altro colore dello stesso tipo puo essere proposto per il solo infill dopo il confronto dei tempi e la conferma finale.
+In **Auto slicing optimization > Filamento principale** scegli la base del progetto; **Materiali e supporti** mostra regole per ruolo, condizioni, filamenti caricati, interfacce consigliate anche non caricate e fonti verificate il 17/10/2026.
 
-La validazione nativa INDX blocca tipi diversi realmente usati dal modello, anche dopo una sincronizzazione o con assegnazioni locali/pittura. Un tool caricato con altro materiale ma inutilizzato non blocca la stampa. I filamenti dedicati ai supporti restano separati da questa regola. [Prova di regressione materiali](PROVA_MATERIALI.md).
+- PLA/PETG: esclusi come alternativa per il modello, consigliati come interfaccia separabile reciproca.
+- PETG/TPU e PLA/TPU: coppie rigido/flessibile documentate, con condizioni di formulazione e adesione. L'infill alternativo richiede beneficio misurato e conferma della variazione meccanica.
+- PLA: PVA o BVOH solubili. PETG: BVOH; nessuna equivalenza automatica con PVA.
+- HIPS/ABS/ASA: da verificare, per indicazioni discordanti e rischio del solvente sul modello. CF/GF e blend non ereditano regole generiche.
+
+**Usa per l'interfaccia** applica solo una coppia consigliata presente nel progetto: base nel principale, interfaccia nel candidato, contatto superiore Z=0, spaziatura zero, almeno due strati; conserva temperature e calibrazioni. Non modifica la classificazione globale del filamento. I supporti ignoti mantengono un avviso mirato; i controlli termici e geometrici restano attivi. [Matrice, fonti e limiti](COMPATIBILITA_MATERIALI.md), [dati versionati](COMPATIBILITA_MATERIALI.json), [regressioni](PROVA_MATERIALI.md).
 
 ## Prova di slicing verificata
 

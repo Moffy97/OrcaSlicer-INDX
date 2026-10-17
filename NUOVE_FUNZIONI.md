@@ -88,13 +88,13 @@ Aprire **Auto slicing optimization** avvia automaticamente tre slicing nativi in
 
 ## Materiale alternativo: proposta solo dopo il confronto dei tempi
 
-Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa dello stesso tipo di materiale ma colore diverso su ugello maggiore. Tipi diversi (per esempio ABS e PLA) sono esclusi anche se piu veloci. Il menu Filamento principale sceglie esplicitamente la base e avvia il confronto. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
+Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa di un altro colore dello stesso tipo oppure di una coppia documentata con condizioni (PETG/TPU o PLA/TPU) su ugello maggiore. PLA/PETG e PLA/ABS sono escluse come alternative strutturali anche se piu veloci. Il menu Filamento principale sceglie esplicitamente la base e avvia il confronto. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
 
 Il riepilogo finale compare solo se almeno un'alternativa, in almeno una delle tre modalita, ha un tempo totale inferiore alla precisione visualizzata (un secondo). Fra piu alternative viene proposta quella piu rapida. La richiesta mostra profilo/tool/diametro, tempo e cambi tool con e senza alternativa, risparmio in minuti/secondi e percentuale, e variazione firmata dei cambi tool. Sono stime native Orca dell'intero piatto, inclusi torre e cambi conteggiati dal motore, non una semplice proporzione fra diametri.
 
 La decisione viene raccolta una sola volta nel riepilogo finale: applica le alternative convenienti al solo infill oppure mantiene tutte le varianti principali. La versione scelta viene rislicerata prima di aggiornare la tabella. Alternative piu lente o equivalenti non generano richieste. Una prova fallita non giustifica una proposta e ripristina la base. Le scelte sono per modalita: un materiale puo convenire in Dettaglio e non in Veloce. Cambiare input invalida le misure; il confronto puo richiedere piu slicing della precedente versione. Durante le prove la modifica del progetto e la chiusura del pannello attendono il completamento, per non lasciare attiva una variante temporanea.
 
-Il controllo nativo INDX blocca tipi diversi fra i filamenti effettivamente usati per il modello, incluse assegnazioni locali e pittura. I materiali caricati ma inutilizzati non bloccano la stampa; i filamenti dedicati ai supporti sono separati da questa regola. Il colore alternativo richiede una conferma esplicita. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
+Il controllo nativo INDX usa regole distinte per modello e interfaccia, incluse assegnazioni locali e pittura. Le coppie rigido/flessibile documentate sono ammesse con condizioni visibili; PLA/PETG sono ammesse solo nel ruolo di supporto. I materiali caricati ma inutilizzati non bloccano la stampa; i filamenti dedicati ai supporti sono separati da questa regola. Il colore alternativo richiede una conferma esplicita. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
 
 ![Risparmio e cambi tool nel fixture simulato](indx-materiale-risparmio-cambi.png)
 
@@ -114,3 +114,13 @@ In Filamenti scegli il tool e Mostra (i tuoi filamenti oppure nuove basi Orca/pe
 Imposta colore e condizioni, poi premi **Conferma filamento e scegli nome**. Il nome personale viene richiesto a quel punto: puoi accettare il suggerimento o rinominarlo e premere **Salva e assegna**. Annulla non scrive dati. Richiamare o rinominare un profilo personale mantiene la stessa identita e le calibrazioni valide. La lista iniziale mostra le basi se non hai ancora filamenti personali.
 
 ![Selettori di marca, materiale e profilo su dati sintetici](klipperscreen-filamenti-elenchi.png)
+
+
+## Consigli materiali e interfacce
+
+In Auto slicing optimization aprire Materiali e supporti: candidati caricati, alternative consigliate, condizioni e fonti datate. Usa per l’interfaccia applica solo coppie consigliate e disponibili, senza cambiare i profili filamento globali. Vedere COMPATIBILITA_MATERIALI.md per matrice, supporti solubili, HIPS condizionale e limiti sui compositi.
+
+
+## Riapertura e modalita non disponibili
+
+Il colore predefinito riscritto dall’importazione 3MF non genera un falso conflitto sulle impostazioni del profilo: il colore effettivo dello slot resta sincronizzato separatamente. Modifiche reali a PA, flow e temperature restano protette. Una modalita priva dell’ugello richiesto viene indicata come Non disponibile e il confronto prosegue con le altre; non vengono inventati risultati per la modalita mancante.

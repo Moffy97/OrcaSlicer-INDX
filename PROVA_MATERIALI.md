@@ -1,15 +1,23 @@
-# Autoslicing: separazione ABS e PLA
+# Verifica materiali per ruolo
 
-La politica automatica usa il tipo materiale e il colore del filamento principale scelto nella pagina di ottimizzazione. Le tre modalita selezionano solo tool dello stesso tipo e colore. Un altro colore dello stesso tipo puo essere proposto per infill soltanto dopo una riduzione misurata del tempo e una scelta finale esplicita. Nessun risparmio o conferma rende candidati tipi diversi.
+La matrice corrente e descritta in [COMPATIBILITA_MATERIALI.md](COMPATIBILITA_MATERIALI.md), con dati e fonti ufficiali datate. I risultati seguenti sono software, senza una stampa fisica.
 
-## Verifica riproducibile
+## Regole e slicing
 
-Compilare Release con BUILD_TESTS=ON. Eseguire `libslic3r_tests "[IndxChecks]"` e `fff_print_tests "[INDX]"`.
+Compilare Release con BUILD_TESTS=ON. Eseguire `libslic3r_tests "[IndxChecks]"` e `fff_print_tests "[INDX],[GCodeWriter]"`.
 
-- Regole: **401 asserzioni, 18 casi**, superati. ABS/PLA esclusi in entrambe le direzioni, per Dettaglio, Equilibrato e Veloce, anche con ugello alternativo maggiore. Altro colore PLA proposto mantenendo pareti e superfici originali.
-- Motore e G-code: **1198 asserzioni, 7 casi**, superati. Caso di regressione con materiali ABS/PLA/PLA/PLA e ugelli 0,6/0,4/0,6/0,8 mm: assegnazione ABS per pareti e PLA per infill respinta; dopo selezione PLA, slicing nativo e analisi di ogni movimento estruso nelle tre modalita confermano che T0 ABS non viene estruso. Anche un override locale che reintroduce ABS viene respinto.
-- Gli altri test INDX di limiti layer, infill combinato, mappature e numero variabile di tool restano verdi.
+- **468 asserzioni, 21 casi IndxChecks**, superati: regole direzionali per modello/interfaccia, origine delle fonti, coppie rigido/flessibile condizionali, nessuna estensione automatica a CF/GF, conservazione delle pareti, alternative solo se misurate e accettate, sincronizzazione e conflitti.
+- **1481 asserzioni, 42 casi di slicing/G-code**, superati: limiti layer, infill combinato, mappature, numero variabile di tool e gestione del feeder condiviso; assegnazioni ABS/PLA respinte anche tramite override locali.
+- Quattro modelli con sporgenza vengono realmente slicerati con interfacce PLA/PETG, PETG/PLA, PLA/PVA e PETG/BVOH. La verifica dei movimenti del G-code trova il secondo materiale nell’interfaccia e il principale nelle pareti e nel riempimento; nessun falso avviso INDX di modello misto. Il PETG/PLA generico non richiede di marcare globalmente il filamento come supporto.
+- PETG/TPU e ammesso nel modello secondo la regola condizionale, ma respinto se proposto come interfaccia da staccare. Un filamento dedicato ai supporti assegnato al riempimento non aggira il controllo.
 
-Il controllo e nella validazione nativa INDX: gli slot caricati ma non usati non bloccano il modello. I filamenti dedicati ai supporti mantengono la gestione separata. Nessuna stampa fisica eseguita.
+Nel progetto di prova PLA con ABS inutilizzato, il confronto nativo produce: Dettaglio 1h38m12s /41,4g/242 cambi; Equilibrato 1h36m54s /45,5g/242; Veloce 1h8m23s /38,0g/0. Sono stime Orca, non tempi fisici. La precedente esportazione del progetto conferma solo T1/T3 (slot 2/4), nessuna selezione T0 ABS, e avvio con il tool PLA.
 
-L’analisi clang-tidy locale non e stata eseguita: lo script di progetto non riconosce il runtime Python portatile e segnala «Missing: Python 3». La compilazione Release e i test sopra sono completati.
+## Limiti delle verifiche
+
+L’analisi clang-tidy non e completata: riconosciuto il Python portatile, lo script richiede un’installazione Visual Studio registrata e non riconosce la toolchain C++ portatile usata dalla build Release. La compilazione e i test sopra sono completati; non viene dichiarato un risultato clang-tidy.
+
+Adesione, temperature effettive, rimozione dei supporti, compatibilita del grado e qualita di stampa richiedono il collaudo fisico INDX. Le coppie ignote o condizionali nei supporti conservano il proprio avviso; i controlli termici e geometrici non sono disabilitati.
+
+
+La regressione della copia filamento riaperta distingue il colore predefinito del preset dal colore effettivo dello slot. Il confronto conserva la protezione di temperatura, flow, PA e note; le modifiche al colore dello slot restano richieste di sincronizzazione.

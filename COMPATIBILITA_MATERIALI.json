@@ -1,0 +1,177 @@
+{
+  "schema": 1,
+  "reviewed": "2026-10-17",
+  "sources": {
+    "prusa-combining": "https://help.prusa3d.com/article/combining-materials-xl_498103",
+    "prusa-multimaterial": "https://pro.prusa3d.com/guides/multi-material-printing/",
+    "prusa-soluble": "https://help.prusa3d.com/article/water-soluble-materials-pva-bvoh_162860",
+    "prusa-hips": "https://help.prusa3d.com/article/hips_167118",
+    "bondtech-flexibles": "https://www.bondtech.se/product/indx-passive-tool-0-4mm-flexibles/",
+    "orca-interface": "https://www.orcaslicer.com/wiki/print_settings/support/support_settings_filament"
+  },
+  "rules": [
+    {
+      "model": "PLA",
+      "other": "PETG",
+      "model_use": "avoid",
+      "interface_use": "breakaway",
+      "reason": "release",
+      "sources": [
+        "prusa-combining"
+      ]
+    },
+    {
+      "model": "PETG",
+      "other": "PLA",
+      "model_use": "avoid",
+      "interface_use": "breakaway",
+      "reason": "release",
+      "sources": [
+        "prusa-combining"
+      ]
+    },
+    {
+      "model": "PLA",
+      "other": "ABS",
+      "model_use": "avoid",
+      "interface_use": "unknown",
+      "reason": "different_conditions",
+      "sources": []
+    },
+    {
+      "model": "ABS",
+      "other": "PLA",
+      "model_use": "avoid",
+      "interface_use": "unknown",
+      "reason": "different_conditions",
+      "sources": []
+    },
+    {
+      "model": "PLA",
+      "other": "ASA",
+      "model_use": "avoid",
+      "interface_use": "unknown",
+      "reason": "different_conditions",
+      "sources": []
+    },
+    {
+      "model": "ASA",
+      "other": "PLA",
+      "model_use": "avoid",
+      "interface_use": "unknown",
+      "reason": "different_conditions",
+      "sources": []
+    },
+    {
+      "model": "PETG",
+      "other": "TPU",
+      "model_use": "conditional",
+      "interface_use": "avoid",
+      "reason": "rigid_flexible",
+      "sources": [
+        "prusa-multimaterial"
+      ]
+    },
+    {
+      "model": "TPU",
+      "other": "PETG",
+      "model_use": "conditional",
+      "interface_use": "avoid",
+      "reason": "rigid_flexible",
+      "sources": [
+        "prusa-multimaterial"
+      ]
+    },
+    {
+      "model": "PLA",
+      "other": "TPU",
+      "model_use": "conditional",
+      "interface_use": "avoid",
+      "reason": "rigid_flexible",
+      "sources": [
+        "prusa-multimaterial"
+      ]
+    },
+    {
+      "model": "TPU",
+      "other": "PLA",
+      "model_use": "conditional",
+      "interface_use": "avoid",
+      "reason": "rigid_flexible",
+      "sources": [
+        "prusa-multimaterial"
+      ]
+    },
+    {
+      "model": "PLA",
+      "other": "PVA",
+      "model_use": "avoid",
+      "interface_use": "soluble",
+      "reason": "dry_soluble_grade",
+      "sources": [
+        "prusa-soluble"
+      ]
+    },
+    {
+      "model": "PLA",
+      "other": "BVOH",
+      "model_use": "avoid",
+      "interface_use": "soluble",
+      "reason": "dry_soluble",
+      "sources": [
+        "prusa-soluble"
+      ]
+    },
+    {
+      "model": "PETG",
+      "other": "BVOH",
+      "model_use": "avoid",
+      "interface_use": "soluble",
+      "reason": "dry_soluble",
+      "sources": [
+        "prusa-soluble"
+      ]
+    },
+    {
+      "model": "PETG",
+      "other": "PVA",
+      "model_use": "unknown",
+      "interface_use": "unknown",
+      "reason": "prefer_bvoh",
+      "sources": [
+        "prusa-soluble"
+      ]
+    },
+    {
+      "model": "ABS",
+      "other": "HIPS",
+      "model_use": "unknown",
+      "interface_use": "conditional",
+      "reason": "solvent_conflict",
+      "sources": [
+        "prusa-soluble",
+        "prusa-hips"
+      ]
+    },
+    {
+      "model": "ASA",
+      "other": "HIPS",
+      "model_use": "unknown",
+      "interface_use": "conditional",
+      "reason": "solvent_conflict",
+      "sources": [
+        "prusa-hips"
+      ]
+    },
+    {
+      "model": "PA11-CF",
+      "other": "PETG",
+      "model_use": "unknown",
+      "interface_use": "conditional",
+      "reason": "grade_specific",
+      "sources": [
+        "prusa-multimaterial"
+      ]
+    }
+  ]
+}

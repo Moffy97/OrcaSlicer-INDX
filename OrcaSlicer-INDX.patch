@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..a79a977f
+index 00000000..fc95069a
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,84 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -80,7 +80,7 @@ index 00000000..a79a977f
 +
 +### Automatic comparison and measured foreign-infill benefit
 +
-+Entering optimization queues the three native slices once idle; the manual action reruns them. The current outer-wall assignment (slot 1 if automatic) defines the primary material. For each mode the workspace first slices the primary-material/color proposal, then larger infill candidates of the same polymer with a different color. Different polymer types, support-designated and unknown materials are excluded. Walls and solids remain primary. Only a valid positive saving at displayed whole-second resolution can produce a proposal; the fastest successful candidate is selected and the dialog shows both complete estimates, saved time/percentage and signed tool-change delta. Different polymer types cannot be approved through this dialog. The native INDX print validation also rejects mixed non-support polymer types among actually used slots, including local assignments, painting and custom tool changes. Unused loaded materials do not block a print. The default is No. Acceptance or refusal is followed by a final slice of the chosen variant, whose statistics alone populate the mode table.
++Entering optimization queues the three native slices once idle; the manual action reruns them. The current outer-wall assignment (slot 1 if automatic) defines the primary material. For each mode the workspace first slices the primary-material/color proposal, then larger infill candidates of another color or a documented conditional rigid/flexible pair. Release-only pairs (PLA/PETG), unsupported polymers and support-designated spools are excluded. Walls and solids remain primary. Only a valid positive saving at displayed whole-second resolution can produce a proposal; the fastest successful candidate is selected and the dialog shows both complete estimates, saved time/percentage and signed tool-change delta. Conditional infill approval discloses changes to flexibility and requires a formulation/adhesion test. Native INDX validation applies the same sourced model policy to structural slots, including local assignments, painting and custom tool changes; support contact is evaluated separately by role, not by the filament support flag. Unused loaded materials do not block a print. The default is No. Acceptance or refusal is followed by a final slice of the chosen variant, whose statistics alone populate the mode table.
 +
 +Trial phases retain a primary preset for restoration. Native errors or invalid estimates cannot generate a recommendation; failed trials restore the baseline. Project inputs are disabled while trials run; input changes invalidate the comparison and restore the primary process instead of accepting stale timing. A modal-choice guard prevents timer reentry. Closing waits until temporary trials and final restoration finish. No printer command is sent by this workflow. Homogeneous proposals retain the three-mode behavior without extra candidate trials.
 +
@@ -104,6 +104,12 @@ index 00000000..a79a977f
 +
 +
 +Automatic optimization processes and adaptive-Z variants are project-embedded presets. The workspace reuses a labelled slot for each mode and alternative, preserving the native project save/restore behavior without creating user-directory presets for every configuration hash. Existing non-project names are not overwritten. Permanent starting processes are grouped by nozzle diameter and requested layer height, separately from the three optimization modes. The used-nozzle cap still takes precedence; process presets do not change the hardware declaration or the model tool.
++
++
++The role-aware material table in IndxMaterials.hpp is a curated, dated snapshot with official source provenance. It is also exported through IndxChecks and the public JSON catalogue. Material/support guidance lists loaded slots and recommended absent interface types. Only recommended release/soluble pairs enable the interface action; unknown/conflicting evidence remains conditional. The action creates a project-embedded process, preserves filament settings, rejects local support overrides and shows the exact zero-top-gap/interface settings before applying. Qualified interfaces do not trigger the previous structural mixed-polymer error; unknown supports retain a targeted warning.
++
++
++Preset ownership hashes exclude the default filament color, which native 3MF import may rewrite; the effective project slot color remains part of the independent bidirectional selection comparison. Legacy hashes are accepted only through the prior normalization. Settings changes remain conflicts, with diagnostic field paths rather than configuration values logged. An unavailable material/nozzle mode is labelled unavailable; the comparison continues with the remaining modes without fabricating metrics or collecting an incomplete alternative-material decision.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -181,12 +187,13 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..63e58497
+index 00000000..348de9af
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,266 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
++#include "IndxMaterials.hpp"
 +#include <cmath>
 +#include <cstdint>
 +#include <string>
@@ -199,13 +206,17 @@ index 00000000..63e58497
 +using Json = nlohmann::json;
 +// Orca may expand a scalar filament vector to the physical extruder variants.
 +// Repeating the same value changes representation, not a filament setting.
-+inline Json canonical_profile_config(Json data) {
++inline Json canonical_profile_config(Json data,bool include_default_color=false) {
 +    for(auto& item:data.items()) {
 +        auto& value=item.value();
 +        if(value.is_array() && value.size()>1 && std::all_of(value.begin()+1,value.end(),[&](const Json& v){return v==value.front();})) {
 +            const auto first=value.front();value=Json::array({first});
 +        }
 +    }
++    // The native 3MF importer may rewrite a preset's default color. The effective
++    // slot color is project_config and is already compared by selection_changes;
++    // it must not invalidate ownership of unrelated PA/flow/temperature settings.
++    if(!include_default_color)data.erase("filament_colour");
 +    return data;
 +}
 +
@@ -303,9 +314,29 @@ index 00000000..63e58497
 +    return {{"wall",wall},{"solid",wall},{"infill",infill}};
 +}
 +
-+// Automatic roles never cross polymer types. Different colors of the same
-+// polymer may be offered for infill after a measured benefit and explicit choice.
-+// Nozzle size or operator approval cannot establish cross-polymer compatibility.
++// Export the same native policy with its source provenance for the UI/catalog.
++inline const Json& material_database() {
++    static const Json database=[](){
++        Json data={{"schema",1},{"reviewed","2026-10-17"},{"sources",Json::object()},{"rules",Json::array()}};
++        for(const auto& source:Materials::sources)data["sources"][source.id]=source.url;
++        for(const auto& row:Materials::rules) {
++            Json sources=Json::array();if(*row.source)sources.push_back(row.source);if(*row.second_source)sources.push_back(row.second_source);
++            data["rules"].push_back({{"model",row.model},{"other",row.other},{"model_use",row.model_use},{"interface_use",row.interface_use},{"reason",row.reason},{"sources",sources}});
++        }
++        return data;
++    }();
++    return database;
++}
++inline Json material_rule(const std::string& model,const std::string& other) {
++    const auto row=Materials::rule(model,other);
++    Json sources=Json::array();if(*row.source)sources.push_back(row.source);if(*row.second_source)sources.push_back(row.second_source);
++    return {{"model_use",row.model_use},{"interface_use",row.interface_use},{"reason",row.reason},{"sources",sources}};
++}
++inline bool model_material_allowed(const std::string& a,const std::string& b) { return Materials::model_allowed(a,b); }
++
++// Primary roles retain the selected material/color. Documented conditional pairs
++// may only be tried as infill alternatives, then explicitly approved after measuring
++// their benefit. Flexibility/mechanical changes remain visible in that decision.
 +// Compare the same whole-second resolution shown to the operator. Invalid,
 +// equal or slower estimates must never produce a recommendation.
 +inline int64_t material_time_saving(double baseline,double alternative) {
@@ -341,7 +372,8 @@ index 00000000..63e58497
 +    const auto roles=propose_roles(same,style,relevant_mounting);
 +    const double current=roles.at("infill").at("diameter").get<double>();
 +    for(const auto& c:candidates)
-+        if(c.at("material")==material && c.value("color",std::string())!=color && !c.value("support",false) &&
++        if((c.at("material")!=material || c.value("color",std::string())!=color) &&
++           model_material_allowed(material.get<std::string>(),c.at("material").get<std::string>()) && !c.value("support",false) &&
 +           std::isfinite(c.at("diameter").get<double>()) && c.at("diameter").get<double>()>current+.0001)alternatives.push_back(c);
 +    std::stable_sort(alternatives.begin(),alternatives.end(),[](const Json& a,const Json& b){return a.at("diameter").template get<double>()>b.at("diameter").template get<double>();});
 +    return {{"roles",roles},{"alternatives",alternatives},{"primary_material",material}};
@@ -425,27 +457,95 @@ index 00000000..63e58497
 +    return {{"schema", 1}, {"blocked", blocked}, {"issues", issues}, {"used_tools", tools}, {"slots", project.at("slots")}};
 +}
 +} }
+diff --git a/src/libslic3r/IndxMaterials.hpp b/src/libslic3r/IndxMaterials.hpp
+new file mode 100644
+index 00000000..f878baee
+--- /dev/null
++++ b/src/libslic3r/IndxMaterials.hpp
+@@ -0,0 +1,47 @@
++#pragma once
++#include <array>
++#include <string>
++
++namespace Slic3r { namespace Indx { namespace Materials {
++// Reviewed 2026-10-17. Directional, grade-specific guidance; no runtime web execution.
++struct Rule { const char *model,*other,*model_use,*interface_use,*reason,*source,*second_source; };
++inline constexpr std::array<Rule,17> rules = {{
++    {"PLA","PETG","avoid","breakaway","release","prusa-combining",""},
++    {"PETG","PLA","avoid","breakaway","release","prusa-combining",""},
++    {"PLA","ABS","avoid","unknown","different_conditions","",""},
++    {"ABS","PLA","avoid","unknown","different_conditions","",""},
++    {"PLA","ASA","avoid","unknown","different_conditions","",""},
++    {"ASA","PLA","avoid","unknown","different_conditions","",""},
++    {"PETG","TPU","conditional","avoid","rigid_flexible","prusa-multimaterial",""},
++    {"TPU","PETG","conditional","avoid","rigid_flexible","prusa-multimaterial",""},
++    {"PLA","TPU","conditional","avoid","rigid_flexible","prusa-multimaterial",""},
++    {"TPU","PLA","conditional","avoid","rigid_flexible","prusa-multimaterial",""},
++    {"PLA","PVA","avoid","soluble","dry_soluble_grade","prusa-soluble",""},
++    {"PLA","BVOH","avoid","soluble","dry_soluble","prusa-soluble",""},
++    {"PETG","BVOH","avoid","soluble","dry_soluble","prusa-soluble",""},
++    {"PETG","PVA","unknown","unknown","prefer_bvoh","prusa-soluble",""},
++    {"ABS","HIPS","unknown","conditional","solvent_conflict","prusa-soluble","prusa-hips"},
++    {"ASA","HIPS","unknown","conditional","solvent_conflict","prusa-hips",""},
++    {"PA11-CF","PETG","unknown","conditional","grade_specific","prusa-multimaterial",""},
++}};
++struct Source { const char *id,*url; };
++inline constexpr std::array<Source,6> sources = {{
++    {"prusa-combining","https://help.prusa3d.com/article/combining-materials-xl_498103"},
++    {"prusa-multimaterial","https://pro.prusa3d.com/guides/multi-material-printing/"},
++    {"prusa-soluble","https://help.prusa3d.com/article/water-soluble-materials-pva-bvoh_162860"},
++    {"prusa-hips","https://help.prusa3d.com/article/hips_167118"},
++    {"bondtech-flexibles","https://www.bondtech.se/product/indx-passive-tool-0-4mm-flexibles/"},
++    {"orca-interface","https://www.orcaslicer.com/wiki/print_settings/support/support_settings_filament"},
++}};
++inline Rule rule(const std::string& a,const std::string& b) {
++    if(a.empty() || b.empty() || a=="Unknown" || b=="Unknown" || a=="UNKNOWN" || b=="UNKNOWN")
++        return {"","","unknown","unknown","unknown","",""};
++    if(a==b)return {"","","same","same","same","",""};
++    for(const auto& r:rules)if(a==r.model && b==r.other)return r;
++    return {"","","unknown","unknown","unknown","",""};
++}
++inline bool model_allowed(const std::string& a,const std::string& b) {
++    const std::string use=rule(a,b).model_use;
++    return use=="same" || use=="conditional";
++}
++} } }
 diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
-index 93a71dcd..032b32f6 100644
+index 93a71dcd..602dc074 100644
 --- a/src/libslic3r/Print.cpp
 +++ b/src/libslic3r/Print.cpp
-@@ -672,6 +672,50 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
+@@ -58,6 +58,7 @@
+ #include "IMEXHelpers.hpp"
+ #include "IMEXZones.hpp"
+ #include "Print.hpp"
++#include "IndxMaterials.hpp"
+ #include "BoundingBox.hpp"
+ #include "Brim.hpp"
+ #include "ClipperUtils.hpp"
+@@ -672,6 +673,57 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
      return extruders;
  }
  
 +// Reuse the plate's region, painted-volume, height-range and support assignments.
 +// Installed but unassigned nozzles must not constrain this print.
-+std::vector<unsigned int> Print::indx_used_filaments() const
++static std::vector<unsigned int> indx_model_filaments(const Print& print)
 +{
 +    std::vector<unsigned int> filaments;
-+    for (const PrintObject* object : m_objects) {
++    for (const PrintObject* object : print.objects()) {
 +        for (const PrintRegion& region : object->all_regions())
-+            region.collect_object_printing_extruders(*this, filaments);
++            region.collect_object_printing_extruders(print, filaments);
 +        for (const ModelVolume* volume : object->model_object()->volumes)
 +            if (volume->is_model_part())
 +                for (size_t filament : volume->get_extruders_from_multi_material_painting())
 +                    filaments.push_back(static_cast<unsigned int>(filament));
 +    }
++    sort_remove_duplicates(filaments);
++    return filaments;
++}
++
++std::vector<unsigned int> Print::indx_used_filaments() const
++{
++    auto filaments=indx_model_filaments(*this);
 +    // Current-tool supports reuse the object feature tools, rather than adding
 +    // an object's default filament when every feature explicitly overrides it.
 +    std::vector<unsigned int> supports;
@@ -480,24 +580,43 @@ index 93a71dcd..032b32f6 100644
  // Appends 0-based indices of the filaments the tool changes of the current plate switch to.
  void Print::append_tool_change_extruders(std::vector<unsigned int> &extruders) const
  {
-@@ -1881,6 +1925,22 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
+@@ -1881,6 +1933,41 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
      if (extruders.empty())
          return { L("No extrusions under current settings.") };
  
-+    // INDX passive tools do not imply cross-polymer compatibility. Check actual
-+    // assignments after synchronization, including painted and local overrides.
-+    // Merely mounted/unused materials and dedicated support filaments are exempt.
++    // Material adhesion and support release are distinct roles. A generic PLA/PETG
++    // interface need not carry filament_is_support, and a flagged support spool
++    // must not bypass checks when assigned to walls or infill.
 +    if (m_config.machine_start_gcode.value.find("INDX_PRINT_START") != std::string::npos) {
-+        std::string primary_material;
-+        for (unsigned int filament : indx_used_filaments()) {
-+            if (m_config.filament_is_support.get_at(filament))
-+                continue;
-+            const auto& material = m_config.filament_type.get_at(filament);
-+            if (primary_material.empty())
-+                primary_material = material;
-+            else if (material.empty() || material != primary_material)
-+                return { L("INDX: i tool usati per il modello devono avere lo stesso tipo di materiale. ABS e PLA non possono essere combinati dall'ottimizzazione. Correggi le assegnazioni di pareti, riempimento, superfici e pittura oppure carica lo stesso materiale sui tool usati.") };
++        auto model_filaments=indx_model_filaments(*this);
++        append_tool_change_extruders(model_filaments);
++        sort_remove_duplicates(model_filaments);
++        for (size_t i=0;i<model_filaments.size();++i) {
++            const auto a=model_filaments[i];
++            if(m_config.filament_is_support.get_at(a))
++                return { L("INDX: un filamento dedicato ai supporti e assegnato al modello. Usalo solo per supporti o interfacce.") };
++            for(size_t j=i+1;j<model_filaments.size();++j)
++                if(!Indx::Materials::model_allowed(m_config.filament_type.get_at(a),m_config.filament_type.get_at(model_filaments[j])))
++                    return { L("INDX: combinazione materiali del modello non documentata o inadatta. PLA/PETG e PLA/ABS non sono alternative per il riempimento. Controlla Materiali e supporti per le coppie e i ruoli consigliati.") };
 +        }
++        std::vector<unsigned int> supports;
++        for(const PrintObject* object:m_objects)
++            if(object->has_support_material())
++                {
++                const auto& cfg=object->config();
++                const int contact=cfg.support_interface_filament>0?cfg.support_interface_filament:cfg.support_filament;
++                if(contact>0 && contact<=int(m_config.filament_diameter.size()))supports.push_back(unsigned(contact-1));
++            }
++        sort_remove_duplicates(supports);
++        bool uncertain_support=false;
++        for(auto support:supports)for(auto model:model_filaments) {
++            const std::string use=Indx::Materials::rule(m_config.filament_type.get_at(model),m_config.filament_type.get_at(support)).interface_use;
++            if(use=="avoid")
++                return { L("INDX: il materiale scelto per i supporti puo aderire al modello anziche separarsi. Scegli una coppia per interfaccia in Materiali e supporti.") };
++            if(use=="unknown" || use=="conditional")uncertain_support=true;
++        }
++        if(uncertain_support)
++            warn(L("INDX: supporto da verificare per questa coppia o formulazione. Consulta le condizioni e le fonti in Materiali e supporti; la compatibilita del modello non implica un supporto removibile."));
 +    }
 +
      // IDEX/IQEX: block multi-color in non-primary parallel modes when the active
@@ -592,10 +711,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..0b6c1500
+index 00000000..285a5b99
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1461 @@
+@@ -0,0 +1,1573 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -933,8 +1052,8 @@ index 00000000..0b6c1500
 +    }
 +    return entries;
 +}
-+std::string config_digest(const DynamicPrintConfig& config) {
-+    std::ostringstream out;config.save_to_json(out,"","User","2.5.0");return digest(Indx::canonical_profile_config(Json::parse(out.str())).dump());
++std::string config_digest(const DynamicPrintConfig& config,bool include_default_color=false) {
++    std::ostringstream out;config.save_to_json(out,"","User","2.5.0");return digest(Indx::canonical_profile_config(Json::parse(out.str()),include_default_color).dump());
 +}
 +void persist_library(const std::vector<LibraryEntry>& entries,bool reviewed=false){
 +    auto& collection=wxGetApp().preset_bundle->filaments;
@@ -950,7 +1069,7 @@ index 00000000..0b6c1500
 +        const auto* existing=collection.find_preset(e.name,false);
 +        if(existing && (existing->filament_id!=e.id || !existing->can_overwrite()))throw std::runtime_error("Nome profilo gia usato: "+e.name);
 +        if(existing && config_digest(existing->config)==config_digest(candidate)){hashes[e.name]=config_digest(existing->config);continue;}
-+        bool unchanged=!existing || hashes.value(e.name,std::string())==config_digest(existing->config);
++        bool unchanged=!existing || hashes.value(e.name,std::string())==config_digest(existing->config) || hashes.value(e.name,std::string())==config_digest(existing->config,true);
 +        if(existing && !unchanged && !e.source.empty()) {
 +            // Older publishers hashed before clone_presets cleared inheritance.
 +            // Reconstruct only that normalization, never ignore other local edits.
@@ -960,7 +1079,14 @@ index 00000000..0b6c1500
 +                unchanged=hashes.value(e.name,std::string())==config_digest(legacy);
 +            }
 +        }
-+        if(existing && !reviewed && !unchanged){conflicts.push_back(e.name);continue;}
++        if(existing && !reviewed && !unchanged){
++            std::ostringstream saved_json,candidate_json;
++            existing->config.save_to_json(saved_json,"","User","2.5.0");candidate.save_to_json(candidate_json,"","User","2.5.0");
++            const auto changes=Json::diff(Indx::canonical_profile_config(Json::parse(saved_json.str())),Indx::canonical_profile_config(Json::parse(candidate_json.str())));
++            Json keys=Json::array();for(const auto& change:changes)keys.push_back(change.value("path",std::string()));
++            BOOST_LOG_TRIVIAL(warning)<<"INDX generated-profile conflict fields: "<<keys.dump();
++            conflicts.push_back(e.name);continue;
++        }
 +        if(existing) {
 +            const auto folder=boost::filesystem::path(data_dir())/"indx-profile-backups";
 +            boost::filesystem::create_directories(folder);
@@ -1629,6 +1755,93 @@ index 00000000..0b6c1500
 +        if(output)output->SetValue(completed);else wxMessageBox(completed,"INDX",wxOK|wxICON_INFORMATION,parent);
 +    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Sincronizza INDX"),wxOK|wxICON_ERROR,parent);}
 +}
++static wxString material_condition(const Json& rule) {
++    const auto reason=rule.value("reason",std::string("unknown"));
++    if(reason=="same")return _L("Stesso tipo: supporto convenzionale, mantenere la distanza Z prevista dal profilo.");
++    if(reason=="release")return _L("PLA/PETG: adatti come interfaccia separabile, non come sostituzione strutturale. Verificare il piano condiviso e la stabilita dei supporti.");
++    if(reason=="different_conditions")return _L("Esclusi dall'ottimizzazione del modello. Per il supporto non e disponibile una raccomandazione generica: verificare grado e condizioni del produttore.");
++    if(reason=="rigid_flexible")return _L("Coppia rigido/flessibile documentata: adesione dipendente da marca, durezza e formulazione. Cambia la flessibilita del pezzo: eseguire un provino. Non e un'interfaccia da staccare. Per TPU morbido Bondtech indica il tool Standard da 0,4 mm.");
++    if(reason=="dry_soluble" || reason=="dry_soluble_grade")return _L("Interfaccia solubile: tenere asciutta la bobina e verificare il grado specifico e le temperature del produttore. Per PETG preferire BVOH; PVA non e una sostituzione generica.");
++    if(reason=="prefer_bvoh")return _L("PVA/PETG non consigliato in modo generico: preferire BVOH documentato per PETG.");
++    if(reason=="solvent_conflict")return _L("HIPS con ABS/ASA richiede verifica del prodotto: le guide riportano condizioni diverse e il limonene puo danneggiare anche il modello. Nessuna applicazione automatica.");
++    if(reason=="grade_specific")return _L("Esempio documentato per PA11-CF: non estendere la regola a ogni nylon o composito. Verificare il grado specifico.");
++    return _L("Combinazione non documentata per questo ruolo. Non estendere automaticamente le regole a CF/GF, blend o altri gradi.");
++}
++static wxString material_use_label(const std::string& use) {
++    if(use=="same")return _L("Stesso materiale");
++    if(use=="conditional")return _L("Con condizioni");
++    if(use=="breakaway")return _L("Interfaccia separabile");
++    if(use=="soluble")return _L("Interfaccia solubile");
++    if(use=="avoid")return _L("Non adatto a questo ruolo");
++    return _L("Da verificare");
++}
++static void show_material_supports(wxWindow* parent,int primary) {
++    auto& bundle=*wxGetApp().preset_bundle;
++    if(primary<1 || size_t(primary)>bundle.filament_presets.size())return;
++    auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();
++    PrintConfig config;config.apply(bundle.full_config(false,plate?std::optional<std::vector<int>>(plate->get_filament_maps()):std::nullopt),true);
++    const auto model=config.filament_type.get_at(primary-1);
++    wxDialog dialog(parent,wxID_ANY,_L("Materiali e supporti"));
++    auto* layout=new wxBoxSizer(wxVERTICAL);
++    layout->Add(new wxStaticText(&dialog,wxID_ANY,wxString::Format(_L("Materiale principale: %s. Fonti verificate il 17/10/2026."),wxString::FromUTF8(model))),0,wxALL,14);
++    wxString details;
++    const auto& db=Indx::material_database();
++    details+=_L("INTERFACCE CONSIGLIATE (anche se non caricate)\n");
++    bool recommended=false;
++    for(const auto& row:db.at("rules"))if(row.at("model")==model && (row.at("interface_use")=="breakaway" || row.at("interface_use")=="soluble")) {
++        details+=wxString::Format(_L("%s: %s\n"),wxString::FromUTF8(row.at("other").get<std::string>()),material_use_label(row.at("interface_use").get<std::string>()));recommended=true;
++    }
++    if(!recommended)details+=_L("Nessuna coppia generica consigliata: usare la scheda del produttore per il grado specifico.\n");
++    details+=_L("\nFILAMENTI DEL PROGETTO: modello / interfaccia\n");
++    for(size_t f=0;f<bundle.filament_presets.size();++f) {
++        const auto type=config.filament_type.get_at(f);const auto rule=Indx::material_rule(model,type);
++        details+=wxString::Format(_L("Filamento %zu (%s): %s / %s\n%s\n\n"),f+1,wxString::FromUTF8(type),
++            material_use_label(rule.at("model_use").get<std::string>()),material_use_label(rule.at("interface_use").get<std::string>()),material_condition(rule));
++    }
++    details+=_L("FONTI E CONDIZIONI\nLe regole riguardano l'uso del materiale, non certificano il risultato sulla macchina. I parametri termici, i limiti ugello e i controlli geometrici restano attivi.\n");
++    for(const auto& source:db.at("sources").items())details+=wxString::FromUTF8(source.value().get<std::string>())+"\n";
++    auto* report=new wxTextCtrl(&dialog,wxID_ANY,details,wxDefaultPosition,wxSize(840,330),wxTE_MULTILINE|wxTE_READONLY);
++    layout->Add(report,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,14);
++    auto* choices=new wxChoice(&dialog,wxID_ANY);
++    std::vector<int> filaments;
++    for(size_t f=0;f<bundle.filament_presets.size();++f) {
++        const auto rule=Indx::material_rule(model,config.filament_type.get_at(f));
++        if(rule.at("interface_use")!="breakaway" && rule.at("interface_use")!="soluble")continue;
++        filaments.push_back(int(f)+1);
++        choices->Append(wxString::Format(_L("Filamento %zu (%s): %s"),f+1,wxString::FromUTF8(config.filament_type.get_at(f)),wxString::FromUTF8(bundle.filament_presets[f])));
++    }
++    if(!filaments.empty())choices->SetSelection(0);else choices->Hide();
++    layout->Add(choices,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,14);
++    auto* note=new wxStaticText(&dialog,wxID_ANY,_L("Applica prepara i supporti: base nel filamento principale, solo interfaccia nel filamento scelto, contatto superiore Z=0, interfaccia piena e almeno due strati. Temperature e calibrazioni restano quelle dei filamenti. Ricalcolare lo slicing e verificare l'anteprima."));
++    note->Wrap(820);layout->Add(note,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,14);
++    auto* actions=new wxBoxSizer(wxHORIZONTAL);
++    auto* close=new wxButton(&dialog,wxID_CANCEL,_L("Chiudi"));auto* apply=new wxButton(&dialog,wxID_OK,_L("Usa per l'interfaccia"));
++    apply->Enable(!filaments.empty());actions->AddStretchSpacer();actions->Add(close,0,wxRIGHT,12);actions->Add(apply);
++    layout->Add(actions,0,wxEXPAND|wxALL,14);dialog.SetSizerAndFit(layout);wxGetApp().UpdateDlgDarkUI(&dialog);
++    if(dialog.ShowModal()!=wxID_OK || choices->GetSelection()<0)return;
++    for(const auto* object:wxGetApp().plater()->model().objects)for(const char* key:{"enable_support","support_filament","support_interface_filament","support_top_z_distance","support_interface_spacing","support_interface_top_layers"}) {
++        bool override=object->config.has(key);
++        for(const auto* volume:object->volumes)override=override || volume->config.has(key);
++        for(const auto& range:object->layer_config_ranges)override=override || range.second.has(key);
++        if(override){wxMessageBox(_L("Sono presenti impostazioni locali dei supporti. Rimuovi gli override prima di applicare la proposta globale."),_L("Interfaccia supporti"),wxOK|wxICON_INFORMATION,parent);return;}
++    }
++    if(!wxGetApp().check_and_save_current_preset_changes(_L("Interfaccia supporti"),_L("Salva le modifiche ai profili prima di applicare l'interfaccia."),false))return;
++    Preset process=bundle.prints.get_edited_preset();
++    process.config.set_key_value("enable_support",new ConfigOptionBool(true));
++    process.config.set_key_value("support_filament",new ConfigOptionInt(primary));
++    process.config.set_key_value("support_interface_filament",new ConfigOptionInt(filaments.at(choices->GetSelection())));
++    process.config.set_key_value("support_interface_not_for_body",new ConfigOptionBool(true));
++    process.config.set_key_value("support_top_z_distance",new ConfigOptionFloat(0.));
++    process.config.set_key_value("support_interface_spacing",new ConfigOptionFloat(0.));
++    const auto* layers=process.config.option<ConfigOptionInt>("support_interface_top_layers");
++    process.config.set_key_value("support_interface_top_layers",new ConfigOptionInt(std::max(2,layers?layers->value:2)));
++    std::string name="INDX - Interfaccia supporti (progetto)";
++    for(int suffix=2;const auto* existing=bundle.prints.find_preset(name,false);++suffix){if(existing->is_project_embedded)break;name="INDX - Interfaccia supporti (progetto) "+std::to_string(suffix);}
++    wxGetApp().plater()->take_snapshot("Interfaccia supporti INDX");
++    bundle.prints.save_current_preset(name,false,true,&process);
++    wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);wxGetApp().load_current_presets(false,false);
++}
++
 +void show_indx_workspace(wxWindow* parent) {
 +    static wxDialog* workspace=nullptr;
 +    if(workspace){workspace->Raise();return;}
@@ -1719,7 +1932,9 @@ index 00000000..0b6c1500
 +        }
 +        if(primary_choice->GetCount())primary_choice->SetSelection(std::clamp(selected?selected->value-1:0,0,int(primary_choice->GetCount())-1));
 +    }
-+    material_row->Add(primary_choice,1,wxEXPAND);
++    material_row->Add(primary_choice,1,wxEXPAND|wxRIGHT,12);
++    auto* material_help=new wxButton(optimization,wxID_ANY,_L("Materiali e supporti"));
++    material_row->Add(material_help,0);
 +    opt_layout->Add(material_row,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* modes=new wxBoxSizer(wxHORIZONTAL);
 +    auto mode_buttons=std::make_shared<std::vector<wxToggleButton*>>();
@@ -1756,8 +1971,8 @@ index 00000000..0b6c1500
 +    wxGetApp().UpdateDlgDarkUI(dialog);
 +    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
 +    struct SliceState {
-+        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;};
-+        bool pending=false;bool seen_running=false;bool displayed=false;
++        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;};
++        bool pending=false;bool seen_running=false;bool displayed=false;bool skip_unavailable=false;
 +        int plate=-1;int mode=-1;int idle_ticks=0;
 +        std::string context;
 +        std::vector<Result> results=std::vector<Result>(3);
@@ -1817,17 +2032,17 @@ index 00000000..0b6c1500
 +        for(int i=0;i<3;++i){
 +            const auto& r=state->results[i];const auto row=comparison->InsertItem(i,labels[i]);
 +            comparison->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
-+            comparison->SetItem(row,1,r.valid?r.time:_L("Da calcolare"));
++            comparison->SetItem(row,1,r.valid?r.time:r.unavailable.empty()?_L("Da calcolare"):_L("Non disponibile"));
 +            comparison->SetItem(row,2,r.valid?wxString::Format("%.1f",r.grams):wxString("--"));
 +            comparison->SetItem(row,3,r.valid?wxString::Format("%d",r.changes):wxString("--"));
 +            wxString badge;
 +            if(r.valid && std::abs(r.seconds-best_time)<.5)badge=_L("Minor tempo");
 +            if(r.valid && std::abs(r.grams-best_weight)<.001)badge=badge.empty()?_L("Minor consumo"):_L("Minor tempo e consumo");
-+            comparison->SetItem(row,4,badge);
++            comparison->SetItem(row,4,r.unavailable.empty()?badge:r.unavailable.Left(90));
 +        }
 +        comparison->Thaw();
 +    };
-+    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;
++    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);draw_comparison();};
 +    draw_comparison();
 +    auto painted=std::make_shared<std::string>();
@@ -1881,14 +2096,19 @@ index 00000000..0b6c1500
 +        }
 +        auto* plate=p->get_partplate_list().get_curr_plate();
 +        if(state->context!=context())invalidate_comparison();
-+        state->results[*selection].valid=false;draw_comparison();
++        state->results[*selection].valid=false;state->results[*selection].unavailable.clear();draw_comparison();
 +        clear_metrics();report->Clear();state->displayed=false;
 +        if(!plate || !plate->has_printable_instances()){state->queue.clear();progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
 +        p->update(false,true);
 +        Json plan;
 +        const int infill=state->phase==1?state->alternatives.at(state->candidate).at("filament").get<int>():state->phase==2?state->approved_filament:0;
 +        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report,infill,&plan,primary_choice->GetSelection()+1)){
-+            restore_primary();state->input_lock.reset();state->queue.clear();
++            restore_primary();state->input_lock.reset();
++            if(plan.is_null()) {
++                state->results[*selection].unavailable=report->GetValue();draw_comparison();
++                state->displayed=false;state->context=context();
++                state->skip_unavailable=state->collecting;
++            }else state->queue.clear(); // A cancelled save/confirmation is not an unavailable mode.
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
 +        if(state->phase==0){state->alternatives=plan.at("alternatives");state->baseline_preset=wxGetApp().preset_bundle->prints.get_edited_preset().name;}
@@ -1905,12 +2125,14 @@ index 00000000..0b6c1500
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
 +        *compare_on_open=false;
-+        state->collecting=true;state->applying=false;
++        state->collecting=true;state->applying=false;state->skip_unavailable=false;
++        for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);
 +        state->queue.clear();for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
 +        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
 +        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
 +    };
++    material_help->Bind(wxEVT_BUTTON,[dialog,primary_choice](wxCommandEvent&){show_material_supports(dialog,primary_choice->GetSelection()+1);});
 +    primary_choice->Bind(wxEVT_CHOICE,[run_comparison](wxCommandEvent&){run_comparison();});
 +    compare->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
 +    slice->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
@@ -1927,13 +2149,14 @@ index 00000000..0b6c1500
 +        }
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice](wxTimerEvent&) {
++    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice,material_help](wxTimerEvent&) {
 +        if(state->choosing)return;
 +        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
 +        slice->Enable(!busy && !state->pending);compare->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
 +        for(auto* button:*tabs)button->Enable(!busy && !state->pending);
 +        primary_choice->Enable(!busy && !state->pending && state->queue.empty());
++        material_help->Enable(!busy && !state->pending && state->queue.empty());
 +        if(!state->pending && state->queue.empty())state->input_lock.reset();
 +        if(!state->context.empty() && state->context!=context()){
 +            restore_primary();state->input_lock.reset();invalidate_comparison();state->queue.clear();state->context=context();
@@ -1943,6 +2166,14 @@ index 00000000..0b6c1500
 +        }
 +        if(*compare_on_open && !state->pending && !busy && book->GetSelection()==2){*compare_on_open=false;run_comparison();return;}
 +        if(!state->pending){
++            if(state->skip_unavailable && !busy) {
++                state->skip_unavailable=false;
++                if(!state->queue.empty()) {
++                    *selection=state->queue.front();state->queue.erase(state->queue.begin());
++                    for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++                }else state->collecting=false;
++                return;
++            }
 +            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
 +                invalidate_comparison();
 +                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Scegli una modalita o premi Ricalcola."));
@@ -2024,7 +2255,7 @@ index 00000000..0b6c1500
 +                        rows->SetItem(row,5,r.candidate.is_null()?_L("Mantieni originale"):wxString::Format(_L("T%d %.2f mm: %s"),r.candidate.at("tool").get<int>(),r.candidate.at("diameter").get<double>(),wxString::FromUTF8(r.candidate.at("name").get<std::string>()).Left(42)));
 +                    }
 +                    content->Add(rows,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
-+                    auto* warning=new wxStaticText(&choice,wxID_ANY,_L("Le alternative usano lo stesso tipo di materiale del principale e possono avere un colore diverso. Tipi diversi, come ABS e PLA, sono esclusi. Le modalita senza vantaggio mantengono il filamento originale."));
++                    auto* warning=new wxStaticText(&choice,wxID_ANY,_L("Le alternative usano lo stesso materiale oppure una coppia documentata con condizioni, come PETG/TPU. Il TPU cambia la flessibilita del pezzo: verificare formulazione e adesione con un provino. PLA/PETG e PLA/ABS restano esclusi dal riempimento. Le modalita senza vantaggio mantengono il filamento originale."));
 +                    warning->Wrap(960);content->Add(warning,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
 +                    auto* actions=new wxBoxSizer(wxHORIZONTAL);
 +                    auto* keep=new wxButton(&choice,wxID_NO,_L("Mantieni materiali originali"));
@@ -2197,7 +2428,7 @@ index 6e4d3e34..52ddce97 100644
      // Orca: the use_3mf printer option makes us send a .gcode.3mf to the printer
      const auto* use_3mf_opt = physical_printer_config->option<ConfigOptionBool>("use_3mf");
 diff --git a/tests/fff_print/test_fill.cpp b/tests/fff_print/test_fill.cpp
-index 1fbedcda..215edbdd 100644
+index 1fbedcda..4046b401 100644
 --- a/tests/fff_print/test_fill.cpp
 +++ b/tests/fff_print/test_fill.cpp
 @@ -43,6 +43,8 @@
@@ -2209,7 +2440,7 @@ index 1fbedcda..215edbdd 100644
  #include "libslic3r/PrintConfig.hpp"
  #include "libslic3r/SVG.hpp"
  #include "libslic3r/libslic3r.h"
-@@ -51,6 +53,247 @@
+@@ -51,6 +53,310 @@
  
  using namespace Slic3r;
  
@@ -2236,7 +2467,7 @@ index 1fbedcda..215edbdd 100644
 +    Test::size_flush_to_nozzles(config);
 +    Print print;Model model;
 +    Test::init_print({make_cube(20.,20.,4.)},print,model,config);
-+    CHECK(print.validate().string.find("stesso tipo di materiale")!=std::string::npos);
++    CHECK(print.validate().string.find("combinazione materiali")!=std::string::npos);
 +    nlohmann::json tools=nlohmann::json::array();
 +    const std::vector<double> diameters={.6,.4,.6,.8};
 +    for(int t=0;t<4;++t)tools.push_back({{"filament",t+1},{"tool",t},{"diameter",diameters[t]},{"material",t==0?"ABS":"PLA"}});
@@ -2258,7 +2489,70 @@ index 1fbedcda..215edbdd 100644
 +    // Local overrides remain subject to the same guard after synchronization.
 +    model.objects.front()->config.set_key_value("outer_wall_filament_id",new ConfigOptionInt(1));
 +    print.apply(model,config);
-+    CHECK(print.validate().string.find("stesso tipo di materiale")!=std::string::npos);
++    CHECK(print.validate().string.find("combinazione materiali")!=std::string::npos);
++}
++
++TEST_CASE("INDX release interfaces slice without a false mixed model warning", "[Fill][INDX][MaterialCompatibility]") {
++    const int pairing=GENERATE(0,1,2,3);
++    const std::vector<std::pair<std::string,std::string>> pairs={{"PLA","PETG"},{"PETG","PLA"},{"PLA","PVA"},{"PETG","BVOH"}};
++    auto config=Test::multifilament_config(2);config.set_num_extruders(2);
++    config.set_key_value("machine_start_gcode",new ConfigOptionString("INDX_PRINT_START"));
++    config.set_key_value("filament_type",new ConfigOptionStrings({pairs[pairing].first,pairs[pairing].second}));
++    // Ordinary PLA/PETG are valid interfaces without changing their global support flag.
++    config.set_key_value("filament_is_support",new ConfigOptionBools({false,pairing>1}));
++    config.set_key_value("nozzle_diameter",new ConfigOptionFloats({.4,.4}));
++    config.set_key_value("filament_map",new ConfigOptionInts({1,2}));
++    config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    config.set_key_value("single_extruder_multi_material",new ConfigOptionBool(false));
++    config.set_key_value("enable_prime_tower",new ConfigOptionBool(false));
++    config.set_key_value("layer_change_gcode",new ConfigOptionString("G92 E0"));
++    config.set_key_value("enable_support",new ConfigOptionBool(true));
++    config.set_key_value("support_type",new ConfigOptionEnum<SupportType>(stNormalAuto));
++    config.set_key_value("support_filament",new ConfigOptionInt(1));
++    config.set_key_value("support_interface_filament",new ConfigOptionInt(2));
++    config.set_key_value("support_top_z_distance",new ConfigOptionFloat(0.));
++    config.set_key_value("support_interface_spacing",new ConfigOptionFloat(0.));
++    config.set_key_value("support_interface_top_layers",new ConfigOptionInt(3));
++    config.set_key_value("layer_height",new ConfigOptionFloat(.2));
++    config.set_key_value("initial_layer_print_height",new ConfigOptionFloat(.2));
++    Test::size_flush_to_nozzles(config);
++    TriangleMesh mesh=make_cube(8.,8.,8.);mesh.translate(6.,6.,0.);
++    TriangleMesh cap=make_cube(20.,20.,2.);cap.translate(0.,0.,8.);mesh.merge(cap);
++    Print print;Model model;Test::init_print({mesh},print,model,config);
++    std::vector<StringObjectException> warnings;
++    const auto validation=print.validate(&warnings);INFO(validation.string);REQUIRE(validation.string.empty());
++    for(const auto& warning:warnings)CHECK(warning.string.find("INDX:")==std::string::npos);
++    GCodeProcessorResult result;REQUIRE_FALSE(Test::gcode(print,&result).empty());
++    bool interface=false,wrong_model=false;
++    for(const auto& move:result.moves)if(move.type==EMoveType::Extrude) {
++        if(move.extrusion_role==erSupportMaterialInterface && move.extruder_id==1)interface=true;
++        if((move.extrusion_role==erPerimeter || move.extrusion_role==erExternalPerimeter || move.extrusion_role==erInternalInfill) && move.extruder_id!=0)wrong_model=true;
++    }
++    CHECK(interface);CHECK_FALSE(wrong_model);
++    // Marking a release spool as support must not bypass the structural-role guard.
++    config.set_key_value("sparse_infill_filament_id",new ConfigOptionInt(2));print.apply(model,config);
++    CHECK_FALSE(print.validate().string.empty());
++}
++
++TEST_CASE("INDX permits a documented rigid flexible model while rejecting release support misuse", "[Fill][INDX][MaterialCompatibility]") {
++    auto config=Test::multifilament_config(2);config.set_num_extruders(2);
++    config.set_key_value("machine_start_gcode",new ConfigOptionString("INDX_PRINT_START"));
++    config.set_key_value("filament_type",new ConfigOptionStrings({"PETG","TPU"}));
++    config.set_key_value("filament_is_support",new ConfigOptionBools({false,false}));
++    config.set_key_value("nozzle_diameter",new ConfigOptionFloats({.4,.4}));
++    config.set_key_value("filament_map",new ConfigOptionInts({1,2}));
++    config.set_key_value("single_extruder_multi_material",new ConfigOptionBool(false));
++    config.set_key_value("enable_prime_tower",new ConfigOptionBool(false));
++    config.set_key_value("enable_support",new ConfigOptionBool(false));
++    config.set_key_value("layer_change_gcode",new ConfigOptionString("G92 E0"));
++    config.set_key_value("sparse_infill_filament_id",new ConfigOptionInt(2));
++    Test::size_flush_to_nozzles(config);
++    Print print;Model model;Test::init_print({make_cube(12.,12.,4.)},print,model,config);
++    const auto validation=print.validate();INFO(validation.string);CHECK(validation.string.empty());
++    config.set_key_value("sparse_infill_filament_id",new ConfigOptionInt(1));
++    config.set_key_value("enable_support",new ConfigOptionBool(true));
++    config.set_key_value("support_interface_filament",new ConfigOptionInt(2));print.apply(model,config);
++    CHECK(print.validate().string.find("supporti puo aderire")!=std::string::npos);
 +}
 +
 +TEST_CASE("INDX role proposals export bounded paths across nozzle layouts and print modes", "[Fill][INDX][IndxSimulation]")
@@ -2509,16 +2803,17 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..e9bd97f9
+index 00000000..32a582c7
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,358 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
++#include <utility>
 +using namespace Slic3r::Indx;
 +
-+TEST_CASE("Automatic infill excludes different polymers regardless of nozzle size", "[IndxChecks][MaterialProposal]") {
++TEST_CASE("Automatic infill excludes release pairs regardless of nozzle size", "[IndxChecks][MaterialProposal]") {
 +    const std::string primary=GENERATE("PLA","ABS");
 +    const std::string style=GENERATE("detail","balanced","speed");
 +    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material",primary}},
@@ -2538,6 +2833,46 @@ index 00000000..e9bd97f9
 +    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PLA"},{"color","#FFFFFF"}},
 +        {{"filament",2},{"tool",1},{"diameter",.8},{"material","PLA"},{"color","#000000"}},
 +        {{"filament",3},{"tool",2},{"diameter",1.2},{"material","ABS"},{"color","#FFFFFF"}}});
++    const auto plan=material_proposal(tools,style,tools,1);
++    for(const std::string role:{"wall","solid","infill"})CHECK(plan.at("roles").at(role).at("filament")==1);
++    REQUIRE(plan.at("alternatives").size()==1);
++    CHECK(plan.at("alternatives").front().at("filament")==2);
++}
++
++TEST_CASE("Material compatibility distinguishes bonded parts from release interfaces", "[IndxChecks][MaterialCompatibility]") {
++    for(const auto& pair:std::vector<std::pair<std::string,std::string>>{{"PLA","PETG"},{"PETG","PLA"}}) {
++        const auto rule=material_rule(pair.first,pair.second);
++        CHECK(rule.at("model_use")=="avoid");
++        CHECK(rule.at("interface_use")=="breakaway");
++        CHECK_FALSE(model_material_allowed(pair.first,pair.second));
++        CHECK_FALSE(rule.at("sources").empty());
++    }
++    for(const auto& pair:std::vector<std::pair<std::string,std::string>>{{"PETG","TPU"},{"TPU","PETG"},{"PLA","TPU"},{"TPU","PLA"}}) {
++        CHECK(model_material_allowed(pair.first,pair.second));
++        CHECK(material_rule(pair.first,pair.second).at("model_use")=="conditional");
++        CHECK(material_rule(pair.first,pair.second).at("interface_use")=="avoid");
++    }
++    CHECK(material_rule("PLA","PVA").at("interface_use")=="soluble");
++    CHECK(material_rule("PLA","BVOH").at("interface_use")=="soluble");
++    CHECK(material_rule("PETG","BVOH").at("interface_use")=="soluble");
++    CHECK(material_rule("PETG","PVA").at("interface_use")=="unknown");
++    CHECK(material_rule("BVOH","PETG").at("interface_use")=="unknown");
++    CHECK(material_rule("ASA","HIPS").at("interface_use")=="conditional");
++    CHECK(material_rule("ABS","HIPS").at("interface_use")=="conditional");
++    CHECK(material_rule("PLA-CF","PETG").at("interface_use")=="unknown");
++    CHECK(material_rule("PA6-CF","PETG").at("interface_use")=="unknown");
++    CHECK_FALSE(model_material_allowed("PLA","ABS"));
++    CHECK_FALSE(model_material_allowed("",""));
++    CHECK_FALSE(model_material_allowed("Unknown","Unknown"));
++    for(const auto& row:material_database().at("rules"))for(const auto& source:row.at("sources"))
++        CHECK(material_database().at("sources").contains(source.get<std::string>()));
++}
++
++TEST_CASE("Conditional rigid flexible infill remains an explicit measured alternative", "[IndxChecks][MaterialProposal]") {
++    const std::string style=GENERATE("detail","balanced","speed");
++    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PETG"}},
++        {{"filament",2},{"tool",1},{"diameter",.8},{"material","TPU"}},
++        {{"filament",3},{"tool",2},{"diameter",1.2},{"material","PLA"}}});
 +    const auto plan=material_proposal(tools,style,tools,1);
 +    for(const std::string role:{"wall","solid","infill"})CHECK(plan.at("roles").at(role).at("filament")==1);
 +    REQUIRE(plan.at("alternatives").size()==1);
@@ -2813,6 +3148,22 @@ index 00000000..e9bd97f9
 +    CHECK(canonical_profile_config(saved)!=canonical_profile_config(expanded));
 +    CHECK(canonical_profile_config(Json{{"empty",Json::array()}})["empty"].empty());
 +    CHECK(canonical_profile_config(saved)==saved);
++}
++
++TEST_CASE("Project default color normalization does not claim a filament settings conflict", "[IndxChecks][SelectionSync]") {
++    const Json saved={{"filament_colour",Json::array({"#FFFFFF"})},{"nozzle_temperature",Json::array({"260"})},{"filament_flow_ratio",Json::array({"0.95"})},{"pressure_advance",Json::array({"0.02"})}};
++    auto imported=saved;imported["filament_colour"]=Json::array({"#26A69A"});
++    CHECK(canonical_profile_config(saved)==canonical_profile_config(imported));
++    CHECK(canonical_profile_config(saved,true)!=canonical_profile_config(imported,true));
++    imported["nozzle_temperature"]=Json::array({"265"});
++    CHECK(canonical_profile_config(saved)!=canonical_profile_config(imported));
++    imported=saved;imported["pressure_advance"]=Json::array({"0.04"});
++    CHECK(canonical_profile_config(saved)!=canonical_profile_config(imported));
++    const Json before={{"0",{{"profile_id","Generic PLA"},{"color","#FFFFFF"}}}};
++    auto after=before;after["0"]["color"]="#26A69A";
++    const auto changes=selection_changes(after,before,Json::object());
++    REQUIRE(changes.size()==1);
++    CHECK(changes.front().at("desired").at("color")=="#26A69A");
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644
