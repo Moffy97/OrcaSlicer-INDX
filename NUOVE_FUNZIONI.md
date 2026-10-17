@@ -1,5 +1,9 @@
 # Preview 0.3.0 - interfaccia diretta e configurazione dalla stampante
 
+## Colori e filamenti
+
+Campione colore anche in Orca, aggiornamento automatico delle assegnazioni dal touch al progetto e due scelte sul touch: **Usa valori standard** oppure **Salva personalizzato**. I valori standard provengono dalla base Orca selezionata; non vengono dichiarati calibrati. [Uso e verifiche](FILAMENTI_STANDARD_PERSONALIZZATI.md).
+
 ## INDX Studio e Performance
 
 Nuova panoramica tool, navigazione laterale, filamenti a schede con conferma sempre visibile e tema globale KlipperScreen. Disponibile il processo Performance da collaudare: stampa fino a 8000 mm/s² e travel 12000 mm/s² / 400 mm/s. [Interfaccia, installazione e risultati](INDX_STUDIO_PERFORMANCE.md).

@@ -85,5 +85,17 @@ with tempfile.TemporaryDirectory() as td:
  nested.scope.set_active(2);nested.brand.set_active_id('Marca B');nested.material.set_active_id('PLA');nested.profiles.set_active_id('B PLA')
  GLib.timeout_add(100,respond,False);nested.assign()
  assert len(store.library())==1
+ panel.load_tool();original_temp=store.assigned(0)['temp'];panel.temp.set_value(250)
+ chosen=Gdk.RGBA();chosen.parse('#CC44AA');panel.color.set_rgba(chosen);panel.color.emit('color-set')
+ assert store.assigned(0)['color']=='#CC44AA'
+ assert store.assigned(0)['temp']==original_temp,'Color saved unrelated draft fields'
+ panel.flow.set_value(1.2);panel.bed.set_value(90);panel.assign_standard()
+ standard=store.assigned(0);assert standard['profile_mode']=='standard'
+ assert standard['flow']==1 and standard['temp']==210 and standard['bed']==60
+ assert not store.calibration(standard,0)
+ standard_uid=standard['library_id'];panel.flow.set_value(1.05)
+ GLib.timeout_add(100,respond,True,'PETG personalizzato');panel.assign()
+ custom=store.assigned(0);assert custom['profile_mode']=='custom' and custom['library_id']!=standard_uid
+ assert custom['flow']==1.05 and store.library()[standard_uid]['flow']==1
  dashboard.content.destroy();screen.destroy()
 print('PASS actual GTK: dependent brand/material/profile lists, incompatible/source filtering, cancel without writes, name at confirmation, assign/rename stable UUID, dashboard proxy, no printer actions.')

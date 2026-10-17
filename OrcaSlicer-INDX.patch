@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..a4d282a3
+index 00000000..05bbe7d2
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,64 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -86,6 +86,10 @@ index 00000000..a4d282a3
 +
 +
 +The material decision is aggregated: all three primary and alternative measurements complete before a single dialog lists time savings and signed tool-change deltas. Only modes with a positive saving receive an alternative on acceptance; decline keeps all primary variants. Decisions survive mode changes within the unchanged workspace and are reset by input invalidation or an explicit full comparison. Partial results cannot produce the decision. The GTK filament picker derives brand and material filters from the compatible source catalogue and personal library. Product metadata is selected rather than typed; a modal naming step precedes assignment, and cancellation does not write the library. Stable library identity is preserved on rename and recall.
++
++The touchscreen can assign an uncalibrated standard copy directly from an Orca catalogue base, or save editable values as a personal profile. Standard copies carry no test provenance. Calibration promotes a standard copy to a separate personal identity so the original base remains reusable. Selecting a color for the currently assigned personal/standard record saves only its color; other unsaved fields are not committed. Color changes retain valid calibration provenance.
++
++The background publisher includes assignments in the library fingerprint. Once idle and free of dirty presets or modal workflows, it persists generated filament copies and applies assigned tool slots, colors, temperatures and valid calibration values to the project. Extra unassigned project slots are preserved. Local generated-profile conflicts defer automatic application and remain available for explicit comparison. This is configuration synchronization, never a print command. The tool page exposes a visual swatch using Orca's existing palette dialog; color storage remains the compatible single-color project fields.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -520,16 +524,17 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..39afd758
+index 00000000..f3e87293
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1298 @@
+@@ -0,0 +1,1359 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
 +#include "Plater.hpp"
 +#include "Tab.hpp"
 +#include "PartPlate.hpp"
++#include "ColorPickerDialog.hpp"
 +#include "libslic3r/PresetBundle.hpp"
 +#include "libslic3r/Preset.hpp"
 +#include "libslic3r/PrintConfig.hpp"
@@ -537,6 +542,7 @@ index 00000000..39afd758
 +#include "libslic3r/Model.hpp"
 +#include "libslic3r/IndxChecks.hpp"
 +#include "libslic3r/Config.hpp"
++#include "libslic3r/Color.hpp"
 +#include "libslic3r/Semver.hpp"
 +#include "libslic3r/AppConfig.hpp"
 +#include "slic3r/Utils/Http.hpp"
@@ -573,6 +579,10 @@ index 00000000..39afd758
 +#include <wx/panel.h>
 +#include <wx/gauge.h>
 +#include <wx/colour.h>
++#include <wx/bmpbuttn.h>
++#include <wx/dcmemory.h>
++#include <wx/bitmap.h>
++#include <wx/brush.h>
 +#include <numeric>
 +#include <zlib.h>
 +#include <chrono>
@@ -1039,6 +1049,33 @@ index 00000000..39afd758
 +    return !tools.empty() && apply_nozzle_setup(tools);
 +}
 +
++void apply_assigned_library(const std::vector<LibraryEntry>& entries) {
++    auto& bundle=*wxGetApp().preset_bundle;
++    if(std::none_of(entries.begin(),entries.end(),[](const auto& e){return e.assigned;}))return;
++    const auto conflicts=wxGetApp().app_config->get("indx_library_conflicts");
++    if(!conflicts.empty() && !Json::parse(conflicts).empty())throw std::runtime_error(_u8L("Copie Orca modificate localmente: usa Sincronizza filamenti per confrontarle."));
++    wxGetApp().plater()->take_snapshot("Aggiornamento filamenti dal touchscreen INDX");
++    const size_t count=std::max(tool_count(),bundle.filament_presets.size());
++    bundle.set_num_filaments(count);
++    auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour",true);colors->values.resize(count,"#FFFFFF");
++    auto* multi=bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour",true);multi->values.resize(count);
++    auto* types=bundle.project_config.option<ConfigOptionStrings>("filament_colour_type",true);types->values.resize(count,"1");
++    auto* mixed=bundle.project_config.option<ConfigOptionBools>("filament_is_mixed",true);mixed->values.resize(count,0);
++    std::vector<int> maps(count,1);
++    if(const auto* old=bundle.project_config.option<ConfigOptionInts>("filament_map"))for(size_t f=0;f<std::min(count,old->values.size());++f)maps[f]=old->values[f];
++    for(const auto& e:entries)if(e.assigned){
++        const auto* saved=bundle.filaments.find_preset(e.name,false);
++        if(!saved || e.tool<0 || size_t(e.tool)>=tool_count())throw std::runtime_error(_u8L("Assegnazione INDX incompleta: aggiornamento rimandato."));
++        bundle.filament_presets[e.tool]=saved->name;colors->values[e.tool]=e.color;
++        multi->values[e.tool]=e.color;types->values[e.tool]="1";mixed->values[e.tool]=0;maps[e.tool]=e.tool+1;
++    }
++    bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(maps));bundle.project_config.set_deserialize_strict("filament_map_mode","Manual");
++    auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();if(plate){plate->set_filament_maps(maps);plate->set_filament_map_mode(fmmManual);}
++    wxGetApp().plater()->on_filament_count_change(count);
++    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->select_preset(bundle.filament_presets[0]);wxGetApp().load_current_presets(false,false);
++    wxGetApp().plater()->sidebar().update_all_preset_comboboxes();wxGetApp().plater()->update_filament_colors_in_full_config();bundle.export_selections(*wxGetApp().app_config);
++}
++
 +struct Publisher {
 +    wxTimer timer;
 +    std::future<NetworkResult> pending;
@@ -1057,19 +1094,21 @@ index 00000000..39afd758
 +            if (pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
 +            auto result=pending.get();
 +            if(pending_printer!=bundle.printers.get_edited_preset().name || pending_url!=host_url())return;
-+            if(result.error.empty()) {
++            if(result.error.empty()) try {
 +                if(is_indx_printer())import_printer_tools(result.remote);
 +                last_hash=result.fingerprint;
 +                if(!result.remote.empty())wxGetApp().app_config->set("indx_printer_snapshot",result.remote.dump());
 +                if(!result.library.empty())wxGetApp().app_config->set("indx_library_cache",result.library.dump());
 +                if(is_indx_printer() && !result.library.empty() && !wxGetApp().preset_bundle->filaments.get_edited_preset().is_dirty){
-+                    const auto signature=digest(result.library.dump()+nozzle_setup().dump());
++                    const auto assignments=result.remote.value("assignments",Json::object());
++                    const auto signature=digest(result.library.dump()+assignments.dump()+nozzle_setup().dump());
 +                    if(signature!=last_library_hash){
-+                        auto entries=library_entries(result.library,Json::object());persist_library(entries);
++                        auto entries=library_entries(result.library,assignments);persist_library(entries);apply_assigned_library(entries);
 +                        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();last_library_hash=signature;
++                        wxGetApp().app_config->set("indx_auto_sync_error","");
 +                    }
 +                }
-+            }
++            }catch(const std::exception& e){wxGetApp().app_config->set("indx_auto_sync_error",e.what());BOOST_LOG_TRIVIAL(error)<<"INDX auto sync: "<<e.what();next=std::chrono::steady_clock::now()+std::chrono::seconds(30);}
 +            else next=std::chrono::steady_clock::now()+std::chrono::seconds(30);
 +        }
 +        if(!is_indx_printer() || std::chrono::steady_clock::now()<next) return;
@@ -1483,6 +1522,30 @@ index 00000000..39afd758
 +    auto* read=new wxButton(machine,wxID_ANY,_L("Aggiorna dalla stampante"));tool_actions->Add(read,0,wxRIGHT,12);
 +    auto* sync=new wxButton(machine,wxID_ANY,_L("Sincronizza filamenti nel progetto"));tool_actions->Add(sync,0);
 +    machine_layout->Add(tool_actions,0,wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* color_row=new wxBoxSizer(wxHORIZONTAL);
++    color_row->Add(new wxStaticText(machine,wxID_ANY,_L("Colore del tool")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,12);
++    auto* color_tool=new wxChoice(machine,wxID_ANY);color_row->Add(color_tool,0,wxRIGHT|wxALIGN_CENTER_VERTICAL,12);
++    auto* color_swatch=new wxBitmapButton(machine,wxID_ANY,wxNullBitmap,wxDefaultPosition,wxSize(120,42));color_swatch->SetToolTip(_L("Tocca il campione per scegliere il colore"));color_row->Add(color_swatch,0);
++    machine_layout->Add(color_row,0,wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto paint_color=[color_tool,color_swatch](){
++        const int t=color_tool->GetSelection();const auto* values=wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
++        wxColour color(t>=0 && values && size_t(t)<values->values.size()?wxString::FromUTF8(values->values[t]):wxString("#FFFFFF"));if(!color.IsOk())color=*wxWHITE;
++        wxBitmap bitmap(92,24);wxMemoryDC dc(bitmap);dc.SetBackground(wxBrush(color));dc.Clear();dc.SelectObject(wxNullBitmap);color_swatch->SetBitmap(bitmap);
++    };
++    color_tool->Bind(wxEVT_CHOICE,[paint_color](wxCommandEvent&){paint_color();});
++    color_swatch->Bind(wxEVT_BUTTON,[dialog,color_tool,paint_color](wxCommandEvent&){
++        const int t=color_tool->GetSelection();if(t<0)return;
++        auto& bundle=*wxGetApp().preset_bundle;auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour",true);colors->values.resize(std::max(tool_count(),bundle.filament_presets.size()),"#FFFFFF");
++        wxColour initial(wxString::FromUTF8(colors->values[t]));if(!initial.IsOk())initial=*wxWHITE;
++        ColorPickerDialog picker(dialog,ColorRGBA(initial.Red(),initial.Green(),initial.Blue(),static_cast<unsigned char>(255)),{},false,color_tool);
++        if(picker.ShowModal()!=wxID_OK || !picker.selection())return;
++        const auto& color=std::get<ColorRGBA>(*picker.selection());const auto hex=wxColour(static_cast<unsigned char>(std::lround(color.r()*255.f)),static_cast<unsigned char>(std::lround(color.g()*255.f)),static_cast<unsigned char>(std::lround(color.b()*255.f))).GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
++        wxGetApp().plater()->take_snapshot("Colore filamento INDX");colors->values[t]=hex;
++        auto* multi=bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour",true);multi->values.resize(colors->values.size());multi->values[t]=hex;
++        auto* types=bundle.project_config.option<ConfigOptionStrings>("filament_colour_type",true);types->values.resize(colors->values.size(),"1");types->values[t]="1";
++        auto* mixed=bundle.project_config.option<ConfigOptionBools>("filament_is_mixed",true);mixed->values.resize(colors->values.size(),0);mixed->values[t]=0;
++        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();wxGetApp().plater()->update_filament_colors_in_full_config();paint_color();
++    });
 +    auto* tools=new wxListCtrl(machine,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
 +    int column=0;for(const auto& title:{_L("Tool"),_L("Diametro mm"),_L("Tipo"),_L("Dock X"),_L("Dock Y"),_L("Offset X"),_L("Offset Y"),_L("Offset Z")}){tools->InsertColumn(column,title,wxLIST_FORMAT_LEFT,column==1?120:100);++column;}
 +    machine_layout->Add(tools,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
@@ -1600,14 +1663,16 @@ index 00000000..39afd758
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);draw_comparison();};
 +    draw_comparison();
 +    auto painted=std::make_shared<std::string>();
-+    auto refresh=[status,tools,painted]() {
++    auto refresh=[status,tools,painted,color_tool,paint_color]() {
 +        try {
 +            const auto raw=wxGetApp().app_config->get("indx_printer_snapshot");auto remote=raw.empty()?Json::object():Json::parse(raw);
 +            const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 +            if(remote.value("host",std::string())!=host_url() || now-remote.value("observed_at",int64_t(0))>60)remote=Json::object();
 +            const auto signature=remote.dump()+nozzle_setup().dump();if(signature==*painted)return;*painted=signature;
++            const int selected=std::max(0,color_tool->GetSelection());color_tool->Clear();for(size_t t=0;t<tool_count();++t)color_tool->Append(wxString::Format("T%zu",t));color_tool->SetSelection(std::min(selected,int(tool_count())-1));paint_color();
 +            status->SetLabel(!remote.value("online",false)?_L("Dati stampante non disponibili o da aggiornare. Puoi preparare lo slicing offline."):
 +                wxString::Format(_L("Klipper: %s\nTool dichiarati sulla stampante: %d"),wxString::FromUTF8(remote.value("state",std::string())),int(remote.value("hardware",Json::object()).value("tools",Json::array()).size())));
++            const auto sync_error=wxGetApp().app_config->get("indx_auto_sync_error");if(!sync_error.empty())status->SetLabel(status->GetLabel()+"\n"+wxString::FromUTF8(sync_error));
 +            auto hardware=Indx::confirmed_tools(remote);const bool declared=!hardware.empty();if(!declared)hardware=nozzle_setup();
 +            const auto geometry=remote.value("geometry",Json::object());const auto offsets=remote.value("offsets",Json::object());
 +            tools->Freeze();tools->DeleteAllItems();
