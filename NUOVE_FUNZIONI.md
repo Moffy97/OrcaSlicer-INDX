@@ -88,13 +88,13 @@ Aprire **Auto slicing optimization** avvia automaticamente tre slicing nativi in
 
 ## Materiale alternativo: proposta solo dopo il confronto dei tempi
 
-Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa su ugello maggiore. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
+Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa dello stesso tipo di materiale ma colore diverso su ugello maggiore. Tipi diversi (per esempio ABS e PLA) sono esclusi anche se piu veloci. Il menu Filamento principale sceglie esplicitamente la base e avvia il confronto. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
 
 Il riepilogo finale compare solo se almeno un'alternativa, in almeno una delle tre modalita, ha un tempo totale inferiore alla precisione visualizzata (un secondo). Fra piu alternative viene proposta quella piu rapida. La richiesta mostra profilo/tool/diametro, tempo e cambi tool con e senza alternativa, risparmio in minuti/secondi e percentuale, e variazione firmata dei cambi tool. Sono stime native Orca dell'intero piatto, inclusi torre e cambi conteggiati dal motore, non una semplice proporzione fra diametri.
 
 La decisione viene raccolta una sola volta nel riepilogo finale: applica le alternative convenienti al solo infill oppure mantiene tutte le varianti principali. La versione scelta viene rislicerata prima di aggiornare la tabella. Alternative piu lente o equivalenti non generano richieste. Una prova fallita non giustifica una proposta e ripristina la base. Le scelte sono per modalita: un materiale puo convenire in Dettaglio e non in Veloce. Cambiare input invalida le misure; il confronto puo richiedere piu slicing della precedente versione. Durante le prove la modifica del progetto e la chiusura del pannello attendono il completamento, per non lasciare attiva una variante temporanea.
 
-Il vantaggio temporale non certifica compatibilita fisica: confermare solo dopo aver verificato adesione, temperature e piano per la coppia di materiali. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
+Il controllo nativo INDX blocca tipi diversi fra i filamenti effettivamente usati per il modello, incluse assegnazioni locali e pittura. I materiali caricati ma inutilizzati non bloccano la stampa; i filamenti dedicati ai supporti sono separati da questa regola. Il colore alternativo richiede una conferma esplicita. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
 
 ![Risparmio e cambi tool nel fixture simulato](indx-materiale-risparmio-cambi.png)
 

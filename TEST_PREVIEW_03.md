@@ -122,3 +122,8 @@ GTK reale sullo SPI-XI, con dati temporanei: elenchi dipendenti marca/materiale/
 
 
 Il test GTK e riproducibile senza contattare la stampante: estrarre touchscreen.zip, poi eseguire con Python GTK `test_filament_picker_gtk.py /percorso/touchscreen /percorso/KlipperScreen` in una sessione grafica. Usa soltanto dati temporanei e salva una schermata sintetica nella cartella touchscreen. La verifica non esegue test fisici.
+
+
+## Politica materiali corrente
+
+Le prove storiche PLA/PLA-CF sopra descrivono la versione precedente. La politica attuale esclude tipi diversi: le alternative devono avere lo stesso tipo materiale del principale e possono avere un colore diverso. ABS/PLA, PLA/PETG e PLA/PLA-CF non diventano alternative automatiche. Vedere PROVA_MATERIALI.md per la regressione corrente.

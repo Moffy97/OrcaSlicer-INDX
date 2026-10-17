@@ -92,6 +92,12 @@ Quando si cambiano diametro o tipo, le calibrazioni precedenti restano archiviat
 
 L'altezza strato e il primo strato vengono adattati automaticamente in un processo INDX separato in base agli ugelli **usati nel piatto corrente**, includendo parti dipinte, assegnazioni per altezza, riempimento e supporti. La mappatura filamento/tool viene risolta prima del calcolo. Un ugello montato ma inutilizzato non limita la stampa. Il limite comune e il minore dei limiti dei tool usati (70% del diametro): se usi 0,20 e 0,80 mm, il layer base non supera 0,14 mm; usando solo 0,80 mm, il limite e 0,56 mm. Il limite e un massimo: non aumenta automaticamente una richiesta piu fine. Modificare il modello, i tool o gli ugelli ricalcola il limite e ripristina le altezze richieste quando possibile, se non cambiate manualmente. Il riempimento combinato somma le altezze dei layer base entro il limite del proprio tool, mantenendo le quote Z coordinate per tutta la stampa. Salvare e rielaborare lo slicing dopo i cambi.
 
+## Materiali nell'ottimizzazione automatica
+
+In **Auto slicing optimization > Filamento principale** scegli il filamento del progetto. Pareti, superfici e riempimento vengono assegnati solo a tool dello stesso tipo di materiale. **ABS e PLA non vengono combinati**, anche quando la variante sarebbe piu veloce. Un altro colore dello stesso tipo puo essere proposto per il solo infill dopo il confronto dei tempi e la conferma finale.
+
+La validazione nativa INDX blocca tipi diversi realmente usati dal modello, anche dopo una sincronizzazione o con assegnazioni locali/pittura. Un tool caricato con altro materiale ma inutilizzato non blocca la stampa. I filamenti dedicati ai supporti restano separati da questa regola. [Prova di regressione materiali](PROVA_MATERIALI.md).
+
 ## Prova di slicing verificata
 
 Disponibili [rapporto e riproduzione della prova 0,20/0,80 mm](PROVA_MULTIDIAMETRO.md), con [progetto 3MF, G-code e verificatore](prova-multidiametro.zip). Pareti da 0,14 mm e 18 gruppi di infill da 0,56 mm, verificati nell'anteprima e nel volume estruso. Accelerazioni dei profili di prova corrette a 3.000 mm/s2. Si tratta di un test software: nessuna stampa fisica eseguita.
