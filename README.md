@@ -4,23 +4,29 @@ Integrazione sperimentale tra una build personalizzata di **OrcaSlicer** e **Kli
 
 **Target attuale: SV08 Max + INDX, numero di tool configurabile, un solo feeder e riscaldatore fisico.** Il supporto ad altre stampanti e un obiettivo futuro, non una compatibilita gia verificata. Il progetto non e una release ufficiale OrcaSlicer, Bondtech, Sovol o KlipperScreen.
 
-## Preview 0.2.0
+## Preview 0.3.0
 
-[Controllo stampante, calibrazioni e tool variabili](NUOVE_FUNZIONI.md). Il pulsante **Controlla** confronta solo i tool usati nel piatto con dichiarazione del montaggio, filamenti, parametri e stato Klipper. **Proponi** prepara assegnazioni per dettaglio, equilibrio o velocita. Il numero di tool non e piu fisso a quattro: i casi software 1/2/4/8/12/64 sono coperti da prove; dock e cablaggio restano da verificare per ogni configurazione fisica.
+**Interfaccia diretta su Orca e KlipperScreen, con pulsanti di selezione al posto dei sottomenu.** Numero tool, diametri, Standard/CHT, dock e offset si gestiscono dal touchscreen. Orca riceve il montaggio e mostra i dati nello spazio INDX; la connessione resta nella sezione stampante.
+
+- [Guida completa illustrata al software](Guida_completa_INDX_Orca_KlipperScreen.pdf)
+- [Procedura e nuovi comandi](NUOVE_FUNZIONI.md)
+- [Verifiche della preview 0.3](TEST_PREVIEW_03.md)
+
+Il pannello macchina salva bozze, controlla quote e stato, crea backup e distingue configurazione salvata da caricata. Le conferme di dock e collaudo sono dichiarazioni esplicite dell'operatore; non sono misure automatiche. L'installazione non le abilita e non esegue movimenti o flash.
 
 ```sh
 python verify.py
 python install_klipperscreen.py --check
 ```
 
-L'installatore supporta `--rollback PERCORSO_BACKUP` insieme alle directory KlipperScreen/config. Il ripristino riguarda software e menu e conserva i dati filamento e calibrazione attuali. La versione e i protocolli sono dichiarati in [VERSION.json](VERSION.json).
+L'installatore supporta `--rollback PERCORSO_BACKUP` con le directory KlipperScreen/config. Il ripristino riguarda software e menu e mantiene filamenti/calibrazioni attuali.
 
 ## Funzioni
 
 - Libreria separata dei propri filamenti, con UUID stabile, nomi modificabili, marca, materiale e colore.
 - Temperature ugello/piano, PA, flow ratio e massimo flusso volumetrico richiamabili senza reinserire i valori.
 - Archivio calibrazioni per **filamento + tool + diametro + Standard/CHT**. Tornando alla stessa combinazione, i risultati vengono recuperati.
-- Montaggio configurato una sola volta su KlipperScreen e importato automaticamente in Orca. Il pulsante **Ugelli** mostra la dichiarazione ricevuta; editor locale come fallback offline. Numero di tool da 1 a 64 (limite software Orca), diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
+- Montaggio configurato una sola volta su KlipperScreen e importato automaticamente in Orca. Lo spazio **INDX > Stampante e tool** mostra la dichiarazione ricevuta. Numero di tool da 1 a 64 (limite software Orca), diametro indipendente per ciascun tool, da 0,10 a 2,00 mm nelle impostazioni software; la disponibilita fisica degli ugelli INDX e separata.
 - Stima CHT modificabile per i profili generici: fattore iniziale 1,30. Il massimo flusso misurato prevale sempre sulla stima. Il diametro non viene usato come un moltiplicatore quadratico della capacita di fusione.
 - Pulsante **INDX**: catalogo Orca standard/personale, importazione persistente dei profili e assegnazione ai tool del progetto. Salvataggio della libreria in background con Orca aperto.
 - Test visivi PA, flow e massimo flusso dal touchscreen. La cella di carico non misura questi risultati.
@@ -29,7 +35,7 @@ L'installatore supporta `--rollback PERCORSO_BACKUP` insieme alle directory Klip
 
 ## Stato e limiti
 
-Anteprima software da testare e perfezionare sulla SV08 Max. Compilazione Windows Release e prove automatiche locali disponibili; la sincronizzazione e stata verificata con un server Moonraker simulato. I sei pannelli hanno superato costruzione e attivazione GTK sullo SPI-XI e i nove moduli sono stati installati con backup. Il collaudo fisico di stampa resta da eseguire. I dati simulati delle prove sono separati dai dati reali della macchina.
+Anteprima software da testare e perfezionare sulla SV08 Max. Compilazione Windows Release e prove automatiche locali disponibili; la sincronizzazione e stata verificata con un server Moonraker simulato. La costruzione e attivazione GTK sono verificate sullo SPI-XI; i pannelli vengono installati con backup. Il collaudo fisico di stampa resta da eseguire. I dati simulati delle prove sono separati dai dati reali della macchina.
 
 **Nessuna procedura di questo repository esegue flash, convalida pinout, certifica quote dock o abilita automaticamente movimenti.** Homing, pulizia, aggancio, offset e collegamenti devono essere verificati sulla singola macchina. Le macro di commissioning devono bloccare i test finche la macchina non e collaudata.
 
@@ -73,8 +79,8 @@ I test fisici richiedono le macro gia collaudate `_INDX_SETUP`, `_INDX_REQUIRE_C
 ## Uso
 
 1. Aprire la build INDX con un profilo stampante INDX con il numero di tool previsto e con impostazioni personali salvate.
-2. Su KlipperScreen, in **I miei filamenti > Conferma ugelli montati sulla stampante**, dichiarare quelli realmente montati. Orca importa numero, diametri e tipi automaticamente; **Ugelli** mostra i dati ricevuti. Standard/CHT e una scelta indipendente dal materiale dell'ugello e dalla variante di estrusore interna di Orca.
-3. Nel pulsante **INDX**, configurare Moonraker con clic destro. Usare un indirizzo della propria stampante: il repository non contiene credenziali o indirizzi personali.
+2. Su KlipperScreen, in **INDX > Tool e dock**, dichiarare quelli realmente montati. Orca importa numero, diametri e tipi automaticamente; **INDX > Stampante e tool** mostra i dati ricevuti. Standard/CHT e una scelta indipendente dal materiale dell'ugello e dalla variante di estrusore interna di Orca.
+3. Configurare la connessione nella sezione stampante di Orca. Usare un indirizzo della propria stampante: il repository non contiene credenziali o indirizzi personali.
 4. Sul touchscreen sincronizzare il catalogo, creare il filamento da una base appropriata, impostare colore/temperature e salvarlo con un nome riconoscibile.
 5. A macchina collaudata, stampare e valutare i test. Salvare i risultati nel profilo. Per il massimo flusso si conserva il 90% dell'ultima fascia scelta senza difetti.
 6. Sincronizzare INDX in Orca per applicare i tool al progetto, salvarlo e rislicera. La sincronizzazione dei dati non modifica un G-code gia esportato.

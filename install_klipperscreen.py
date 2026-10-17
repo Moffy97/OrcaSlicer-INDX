@@ -1,7 +1,7 @@
 """Verified local panel update with preview, backup and rollback. No printer G-code."""
-import argparse,hashlib,json,os,py_compile,shutil,subprocess,tempfile,time,zipfile
+import argparse,hashlib,json,os,py_compile,re,shutil,subprocess,tempfile,time,zipfile
 from pathlib import Path
-NAMES=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py','indx_commissioning.py','indx_setup.py','indx_tools.py']
+NAMES=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py','indx_commissioning.py','indx_setup.py','indx_tools.py','indx_machine.py','indx_machine_panel.py','indx_dashboard.py']
 
 def package(root):
  sums={line.split('  ',1)[1]:line.split('  ',1)[0] for line in (root/'SHA256SUMS').read_text().splitlines()}
@@ -54,10 +54,14 @@ def main():
     if target.exists():shutil.copy2(target,backup/name)
    (backup/'rollback.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
    text=(config/'KlipperScreen.conf').read_text(encoding='utf-8')
-   for key,label,panel in [('filaments','I miei filamenti','indx_filaments'),('pa','Calibra PA','indx_pa'),('flow','Calibra flow','indx_flow'),('max_flow','Calibra flusso massimo','indx_max_flow'),('setup','Collaudo INDX','indx_setup'),('tools','Tool configurati','indx_tools')]:
+   for key,label,panel in [('filaments','I miei filamenti','indx_filaments'),('pa','Calibra PA','indx_pa'),('flow','Calibra flow','indx_flow'),('max_flow','Calibra flusso massimo','indx_max_flow'),('setup','Collaudo INDX','indx_setup'),('tools','Tool configurati','indx_tools'),('machine','Dock e offset','indx_machine_panel')]:
     section='[menu __main indx '+key+']'
     if section not in text:text+='\n'+section+'\nname: '+label+'\nicon: filament\npanel: '+panel+'\n'
    if '[menu __main indx]' not in text:text+='\n[menu __main indx]\nname: INDX\nicon: filament\n'
+   def dashboard(match):
+    section=re.sub(r'^name:.*$', 'name: INDX',match[0],flags=re.M)
+    return re.sub(r'^panel:.*$', 'panel: indx_dashboard',section,flags=re.M) if re.search(r'^panel:',section,re.M) else section.rstrip()+'\npanel: indx_dashboard\n\n'
+   text=re.sub(r'^\[menu __main indx\][^\n]*\n.*?(?=^\[|\Z)',dashboard,text,flags=re.M|re.S)
    try:
     for name in NAMES:shutil.copy2(stage/name,ks/'panels'/name)
     temp=config/'KlipperScreen.conf.indx-tmp';temp.write_text(text,encoding='utf-8');os.replace(temp,config/'KlipperScreen.conf')
