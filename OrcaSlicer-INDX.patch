@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..7a86dd6f
+index 00000000..9eb2b314
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,55 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -76,6 +76,11 @@ index 00000000..7a86dd6f
 +
 +
 +The optimization page keeps one result per mode for the lifetime of the workspace. Compare modes queues native slices sequentially and runs the initially selected mode last, preserving the user's final selection on successful completion. Only native valid results populate the table; time and weight badges are relative to computed rows. The comparison context hashes full configuration, plate mapping, nozzle setup, immutable mesh identity, instance/volume transformations, model settings and painting/layer profile revisions, and custom per-layer G-code. A role proposal explicitly accepts its own configuration transition; other context changes invalidate all rows. Unfinished, failed and interrupted runs never populate a row. The queue is cleared on errors or external edits. Cache invalidation also follows native result invalidation when idle.
++
++
++### Automatic comparison and operator-approved foreign infill
++
++Entering the optimization page queues the three native slices once idle. The manual action reruns the comparison; entering again restarts it. The current outer-wall assignment (slot 1 if automatic) defines the primary material. Role selection stays within that material. Larger foreign-material candidate nozzles, excluding support-designated or unknown materials, are offered only through explicit operator selection for sparse infill. Physical compatibility is not inferred from names. The bounded selection dialog defaults to keeping the primary material and warns that extra changes may negate a speed advantage. A decision keyed by candidate metadata and mounting is shared across the comparison and cleared with input invalidation; no foreign candidate is applied without it. Homogeneous proposals retain their prior behavior. No printer command is sent by this workflow.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -153,10 +158,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..0d0ff2ef
+index 00000000..f8fc8974
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,188 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -242,6 +247,29 @@ index 00000000..0d0ff2ef
 +        if(c.at("diameter").get<double>()<=.6001 && c.at("diameter").get<double>()>wall.at("diameter").get<double>()+.0001)wall=c;
 +    const auto infill=candidates.back();
 +    return {{"wall",wall},{"solid",wall},{"infill",infill}};
++}
++
++// A different polymer never becomes wall/surface material implicitly. Larger
++// foreign infill nozzles are only offers; the GUI must obtain operator approval
++// of the material combination before applying one. Diameter is not a speed claim.
++inline Json material_proposal(const Json& candidates,const std::string& style,const Json& mounted,int primary_filament) {
++    auto primary=std::find_if(candidates.begin(),candidates.end(),[&](const Json& c){return c.at("filament")==primary_filament;});
++    if(primary==candidates.end() || primary->value("material",std::string()).empty())throw std::invalid_argument("missing_primary_material");
++    const auto material=primary->at("material");
++    Json same=Json::array(),relevant_mounting=Json::array(),alternatives=Json::array();
++    for(const auto& c:candidates)if(c.at("material")==material && !c.value("support",false))same.push_back(c);
++    for(const auto& tool:mounted){
++        bool assigned=false,same_material=false;
++        for(const auto& c:candidates)if(c.at("tool")==tool.at("tool")){assigned=true;if(c.at("material")==material)same_material=true;}
++        if(!assigned || same_material)relevant_mounting.push_back(tool);
++    }
++    const auto roles=propose_roles(same,style,relevant_mounting);
++    const double current=roles.at("infill").at("diameter").get<double>();
++    for(const auto& c:candidates)
++        if(!c.value("material",std::string()).empty() && c.at("material")!=material && !c.value("support",false) &&
++           std::isfinite(c.at("diameter").get<double>()) && c.at("diameter").get<double>()>current+.0001)alternatives.push_back(c);
++    std::stable_sort(alternatives.begin(),alternatives.end(),[](const Json& a,const Json& b){return a.at("diameter").template get<double>()>b.at("diameter").template get<double>();});
++    return {{"roles",roles},{"alternatives",alternatives},{"primary_material",material}};
 +}
 +
 +// Shared protocol rules. Hardware is declared independently on the touchscreen;
@@ -466,10 +494,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..cb631eaf
+index 00000000..3c867e04
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1150 @@
+@@ -0,0 +1,1191 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -514,6 +542,7 @@ index 00000000..cb631eaf
 +#include <wx/simplebook.h>
 +#include <wx/tglbtn.h>
 +#include <wx/listctrl.h>
++#include <wx/listbox.h>
 +#include <wx/radiobox.h>
 +#include <wx/weakref.h>
 +#include <wx/panel.h>
@@ -1041,7 +1070,7 @@ index 00000000..cb631eaf
 +        wxGetApp().app_config->set("indx_preflight_report",project_check(print,remote).dump());
 +    }catch(const std::exception& e){BOOST_LOG_TRIVIAL(error)<<"INDX check: "<<e.what();}
 +}
-+bool suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
++bool suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output,std::map<std::string,int>* material_choices) {
 +    if(!is_indx_printer())return false;
 +    try {
 +        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: ugello maggiore per pareti, superfici e infill"));
@@ -1063,15 +1092,48 @@ index 00000000..cb631eaf
 +        config.filament_map.values=proposal_maps;
 +        for(size_t f=0;f<bundle.filament_presets.size();++f) {
 +            const size_t tool=get_extruder_index(config,unsigned(f));if(tool>=tool_count())continue;
-+            candidates.push_back({{"filament",f+1},{"tool",tool},{"diameter",mounted.at(tool).at("diameter")},{"material",materials?materials->get_at(f):std::string()}});
++            const auto* supports=config.option<ConfigOptionBools>("filament_is_support");
++            const auto* temps=config.option<ConfigOptionInts>("nozzle_temperature");
++            const auto* flow=config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
++            candidates.push_back({{"filament",f+1},{"tool",tool},{"diameter",mounted.at(tool).at("diameter")},
++                {"material",materials?materials->get_at(f):std::string()},{"name",bundle.filament_presets[f]},
++                {"support",supports && supports->get_at(f)},{"temp",temps?temps->get_at(f):0},{"max_flow",flow?flow->get_at(f):0.}});
 +        }
 +        BOOST_LOG_TRIVIAL(info)<<"INDX proposal inputs: "<<slots.dump()<<" maps "<<Json(config.filament_map.values).dump()<<" candidates "<<candidates.dump();
-+        Json roles;
-+        try {roles=Indx::propose_roles(candidates,style==0?"detail":style==1?"balanced":"speed",mounted);}
++        Json roles,plan;
++        try {
++            const auto* assigned=config.option<ConfigOptionInt>("outer_wall_filament_id");
++            const int primary=assigned && assigned->value>0?assigned->value:1;
++            plan=Indx::material_proposal(candidates,style==0?"detail":style==1?"balanced":"speed",mounted,primary);
++            roles=plan.at("roles");
++        }
 +        catch(const std::invalid_argument& e){
 +            if(std::string(e.what())=="detail_no_fine_filament" || std::string(e.what())=="fine_tool_unassigned")
 +                throw std::runtime_error(_u8L("Manca un filamento associato all'ugello fine. Per Dettaglio le pareti richiedono 0,4 mm o meno: sincronizza i filamenti e associa il materiale al tool corretto. Un ugello da 0,6 mm non viene proposto al suo posto. Se e montato uno 0,2 mm, associa anche quel tool per usarlo."));
-+            throw std::runtime_error(_u8L("La proposta automatica richiede filamenti dello stesso materiale e mappature valide. Con materiali diversi assegna le funzioni manualmente."));
++            throw std::runtime_error(_u8L("Manca un materiale valido per le pareti. Controlla il filamento assegnato alle pareti e la mappatura dei tool."));
++        }
++        const auto& alternatives=plan.at("alternatives");
++        if(!alternatives.empty()) {
++            const auto key=digest(candidates.dump()+plan.at("primary_material").dump()+mounted.dump());
++            int approved=-1;
++            if(material_choices){const auto found=material_choices->find(key);if(found!=material_choices->end())approved=found->second;}
++            if(approved<0){
++                wxArrayString options;options.Add(_L("Mantieni il materiale delle pareti anche nel riempimento"));
++                for(const auto& c:alternatives)options.Add(wxString::Format(_L("Usa %s (%s), T%d, %.2f mm, %d C, portata %.1f mm3/s"),
++                    wxString::FromUTF8(c.at("name").get<std::string>()).Left(55),wxString::FromUTF8(c.at("material").get<std::string>()),c.at("tool").get<int>(),c.at("diameter").get<double>(),c.at("temp").get<int>(),c.at("max_flow").get<double>()));
++                wxDialog material(parent,wxID_ANY,_L("Altro materiale per il riempimento?"));
++                auto* layout=new wxBoxSizer(wxVERTICAL);
++                auto* note=new wxStaticText(&material,wxID_ANY,wxString::Format(_L("Pareti e superfici restano in %s. Un altro materiale su un ugello maggiore potrebbe velocizzare il riempimento.\n\nSelezionalo solo se hai gia verificato adesione tra i materiali, temperature e piano per questo pezzo. Il software non certifica la compatibilita dal nome del filamento. Lo slicing calcola il tempo: piu cambi tool possono annullare il vantaggio.\n\nLa scelta vale per questo confronto. Annulla interrompe il calcolo."),wxString::FromUTF8(plan.at("primary_material").get<std::string>())));
++                note->Wrap(780);layout->Add(note,0,wxEXPAND|wxALL,16);
++                auto* selection=new wxListBox(&material,wxID_ANY,wxDefaultPosition,wxSize(780,110),options,wxLB_SINGLE);
++                selection->SetMinSize(wxSize(780,110));selection->SetSelection(0);layout->Add(selection,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
++                layout->Add(material.CreateSeparatedButtonSizer(wxOK|wxCANCEL),0,wxEXPAND|wxALL,16);
++                material.SetSizerAndFit(layout);wxGetApp().UpdateDlgDarkUI(&material);
++                if(material.ShowModal()!=wxID_OK)return false;
++                approved=selection->GetSelection()==0?0:alternatives.at(selection->GetSelection()-1).at("filament").get<int>();
++                if(material_choices)(*material_choices)[key]=approved;
++            }
++            for(const auto& c:alternatives)if(c.at("filament")==approved)roles["infill"]=c;
 +        }
 +        const char* fields[]={"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"};
 +        for(const auto* object:wxGetApp().plater()->model().objects) {
@@ -1385,11 +1447,14 @@ index 00000000..cb631eaf
 +    auto* book=new wxSimplebook(dialog,wxID_ANY);
 +    auto* navigation=new wxBoxSizer(wxHORIZONTAL);
 +    auto tabs=std::make_shared<std::vector<wxToggleButton*>>();
++    auto compare_on_open=std::make_shared<bool>(false);
 +    for(const auto& label:{_L("Info INDX"),_L("Config tool"),_L("Auto slicing optimization")}) {
 +        const int index=int(tabs->size());
 +        auto* button=new wxToggleButton(dialog,wxID_ANY,label,wxDefaultPosition,wxSize(-1,48));
 +        tabs->push_back(button);navigation->Add(button,1,wxALL,4);
-+        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index](wxCommandEvent&){
++        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index,compare_on_open](wxCommandEvent&){
++            const bool entering=book->GetSelection()!=index;
++            *compare_on_open=index==2 && entering;
 +            book->SetSelection(index);for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==size_t(index));
 +        });
 +    }
@@ -1434,7 +1499,7 @@ index 00000000..cb631eaf
 +    auto* actions=new wxBoxSizer(wxHORIZONTAL);
 +    auto* slice=new wxButton(optimization,wxID_ANY,_L("Ricalcola"),wxDefaultPosition,wxSize(220,46));
 +    actions->Add(slice,0,wxRIGHT,16);
-+    auto* compare=new wxButton(optimization,wxID_ANY,_L("Confronta le 3 modalita"),wxDefaultPosition,wxSize(220,46));
++    auto* compare=new wxButton(optimization,wxID_ANY,_L("Ricalcola confronto"),wxDefaultPosition,wxSize(220,46));
 +    actions->Add(compare,0,wxRIGHT,16);
 +    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita: lo slicing parte automaticamente."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
 +    opt_layout->Add(actions,0,wxEXPAND|wxALL,20);
@@ -1459,6 +1524,7 @@ index 00000000..cb631eaf
 +        std::string context;
 +        std::vector<Result> results=std::vector<Result>(3);
 +        std::vector<int> queue;
++        std::map<std::string,int> material_choices;
 +    };
 +    auto state=std::make_shared<SliceState>();
 +    // Compare complete inputs, accepting only changes made by our own mode action.
@@ -1501,7 +1567,7 @@ index 00000000..cb631eaf
 +        }
 +        comparison->Thaw();
 +    };
-+    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;draw_comparison();};
++    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results)r.valid=false;state->material_choices.clear();draw_comparison();};
 +    draw_comparison();
 +    auto painted=std::make_shared<std::string>();
 +    auto refresh=[status,tools,painted]() {
@@ -1545,7 +1611,7 @@ index 00000000..cb631eaf
 +        clear_metrics();report->Clear();state->displayed=false;
 +        if(!plate || !plate->has_printable_instances()){state->queue.clear();progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
 +        p->update(false,true);
-+        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report)){
++        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report,&state->material_choices)){
 +            state->queue.clear();
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
@@ -1557,13 +1623,15 @@ index 00000000..cb631eaf
 +        state->context=context();
 +    };
 +    slice->Bind(wxEVT_BUTTON,[run_slice](wxCommandEvent&){run_slice();});
-+    compare->Bind(wxEVT_BUTTON,[selection,state,mode_buttons,run_slice](wxCommandEvent&){
++    auto run_comparison=[selection,state,mode_buttons,run_slice,compare_on_open](){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
++        *compare_on_open=false;
 +        state->queue.clear();for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
 +        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
 +        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
-+    });
++    };
++    compare->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
 +    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice](wxCommandEvent&){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
@@ -1574,7 +1642,7 @@ index 00000000..cb631eaf
 +        if(changed || state->mode!=i || !state->displayed)run_slice();
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice](wxTimerEvent&) {
++    dialog->Bind(wxEVT_TIMER,[refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book](wxTimerEvent&) {
 +        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
 +        slice->Enable(!busy && !state->pending);compare->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
@@ -1584,6 +1652,7 @@ index 00000000..cb631eaf
 +            progress_text->SetLabel(_L("Parametri modificati: ricalcola il confronto."));
 +            if(state->pending){state->pending=false;progress_text->SetLabel(_L("Il progetto e cambiato durante il confronto. Ricalcola le modalita."));return;}
 +        }
++        if(*compare_on_open && !state->pending && !busy && book->GetSelection()==2){*compare_on_open=false;run_comparison();return;}
 +        if(!state->pending){
 +            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
 +                invalidate_comparison();
@@ -1622,12 +1691,13 @@ index 00000000..cb631eaf
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
 new file mode 100644
-index 00000000..3a986109
+index 00000000..57d59f6e
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.hpp
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,17 @@
 +#pragma once
 +#include <string>
++#include <map>
 +class wxWindow;
 +class wxTextCtrl;
 +namespace Slic3r { class Print; namespace GUI {
@@ -1640,7 +1710,7 @@ index 00000000..3a986109
 +bool is_indx_profile();
 +void refresh_indx_preflight(const Print& print);
 +bool check_indx_printer(wxWindow* parent, const Print& print, bool sending = false, const std::string& target = {}, wxTextCtrl* output = nullptr);
-+bool suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr);
++bool suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr, std::map<std::string,int>* material_choices = nullptr);
 +} }
 diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
 index ae0c0c46..fbbd6660 100644
@@ -2023,14 +2093,43 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..5071e6c6
+index 00000000..8fd1bc25
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,214 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
 +using namespace Slic3r::Indx;
++
++TEST_CASE("Foreign infill materials require an explicit choice and never replace walls", "[IndxChecks][MaterialProposal]") {
++    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PLA"}},
++        {{"filament",2},{"tool",1},{"diameter",.8},{"material","PETG"}},
++        {{"filament",3},{"tool",2},{"diameter",.2},{"material","TPU"}},
++        {{"filament",4},{"tool",3},{"diameter",1.2},{"material","PVA"},{"support",true}}});
++    const std::string style=GENERATE("detail","balanced","speed");
++    const auto plan=material_proposal(tools,style,tools,1);
++    for(const std::string role:{"wall","solid","infill"})CHECK(plan.at("roles").at(role).at("filament")==1);
++    REQUIRE(plan.at("alternatives").size()==1);
++    CHECK(plan.at("alternatives").front().at("filament")==2);
++    // A foreign fine nozzle cannot force fine walls in a different polymer.
++    CHECK(plan.at("roles").at("wall").at("diameter")==.4);
++    CHECK_THROWS_AS(material_proposal(tools,style,tools,9),std::invalid_argument);
++    tools[1]["diameter"]=.4;
++    CHECK(material_proposal(tools,style,tools,1).at("alternatives").empty());
++    tools[1]["diameter"]=.8;tools[1]["material"]="";
++    CHECK(material_proposal(tools,style,tools,1).at("alternatives").empty());
++}
++
++TEST_CASE("Material-aware proposals preserve homogeneous nozzle selection", "[IndxChecks][MaterialProposal]") {
++    Json tools=Json::array();
++    const std::vector<double> diameters={.6,.4,.6,.8};
++    for(int i=0;i<4;++i)tools.push_back({{"filament",i+1},{"tool",i},{"diameter",diameters[i]},{"material","PLA"}});
++    const std::string style=GENERATE("detail","balanced","speed");
++    const auto plan=material_proposal(tools,style,tools,1);
++    CHECK(plan.at("roles")==propose_roles(tools,style,tools));
++    CHECK(plan.at("alternatives").empty());
++}
 +
 +TEST_CASE("Automatic hardware import accepts only complete confirmed printer declarations", "[IndxChecks]") {
 +    const size_t count=GENERATE(1,2,4,6,8,64);

@@ -71,4 +71,13 @@ Il cambio modalita nasconde i risultati precedenti. Il nuovo calcolo parte autom
 
 La pagina Auto slicing optimization conserva nella stessa tabella tempo stimato, filamento in grammi e cambi tool per Dettaglio, Equilibrato e Veloce. Le righe mancanti sono Da calcolare. Gli indicatori Minor tempo e Minor consumo confrontano i risultati disponibili; non valutano la qualita del pezzo.
 
-**Confronta le 3 modalita** esegue tre slicing nativi in sequenza, terminando con la modalita inizialmente selezionata. Anche il normale cambio di modalita aggiorna la relativa riga. Il confronto viene conservato durante la sessione del pannello; chiudendo il pannello occorre ricalcolarlo. Una modifica a piatto, modello, montaggio, filamento o parametri invalida i risultati. I tempi sono stime del motore Orca e il consumo comprende cio che Orca conteggia nel piatto, inclusa la torre se presente.
+Aprire **Auto slicing optimization** avvia automaticamente tre slicing nativi in sequenza; **Ricalcola confronto** permette di ripeterli, terminando con la modalita inizialmente selezionata. Anche il normale cambio di modalita aggiorna la relativa riga. Il confronto viene conservato durante la sessione del pannello; chiudendo il pannello occorre ricalcolarlo. Una modifica a piatto, modello, montaggio, filamento o parametri invalida i risultati. I tempi sono stime del motore Orca e il consumo comprende cio che Orca conteggia nel piatto, inclusa la torre se presente.
+
+
+## Materiale alternativo per il riempimento
+
+Le proposte tengono pareti e superfici nel materiale assegnato alle pareti esterne (primo slot se automatico). Se un altro materiale e associato a un ugello piu grande del migliore disponibile per il riempimento principale, compare una richiesta prima del confronto. La scelta iniziale mantiene il materiale delle pareti. Si puo scegliere esplicitamente un altro profilo per il solo riempimento sparso; i materiali marcati per supporti, senza tipo dichiarato e gli ugelli uguali o piu piccoli sono esclusi.
+
+Il diametro indica un'opportunita, non un risparmio garantito. Confermare l'alternativa solo dopo aver verificato adesione fra materiali, temperature e piano per il pezzo: il software non certifica la compatibilita dal nome. La tabella mostra i tempi effettivamente stimati dal motore, compresi i cambi tool. La scelta viene riutilizzata per le tre modalita e azzerata quando cambiano gli input o si chiude il pannello. Annulla interrompe il confronto. Supporti, pittura e assegnazioni locali conservano le regole precedenti.
+
+![Richiesta su progetto sintetico di collaudo](indx-materiale-alternativo-richiesta.png)

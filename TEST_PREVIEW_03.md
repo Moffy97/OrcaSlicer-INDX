@@ -90,3 +90,16 @@ Prova GUI Windows: Confronta le 3 modalita ha completato Dettaglio, Veloce, Equi
 Verifica invalidazione: cambiando temporaneamente il layer da 0,20 a 0,18 mm, tutte le righe sono tornate Da calcolare e le metriche precedenti sono state nascoste. Il valore originale 0,20 mm e stato ripristinato. Nessuna stampa inviata. Suite IndxChecks: 275 asserzioni in 11 casi passate; pipeline FFF invariata rispetto alle 60 simulazioni documentate.
 
 ![Confronto delle tre modalita](indx-confronto-modalita.png)
+
+
+## Confronto automatico e materiale alternativo
+
+Build Windows Release completata. Test C++: 308 asserzioni in 13 casi IndxChecks; matrice di 60 slicing nativi con 967 asserzioni; regressioni CombinedInfill/UsedLayerTools/GCodeWriter: 467 asserzioni in 38 casi. Verificati ugelli alternativi maggiori, esclusione supporti/materiali sconosciuti e piccoli, conservazione delle proposte omogenee e mancato uso automatico di un materiale diverso.
+
+Prova UI isolata, nessuna connessione alla stampante: ingresso in Auto slicing optimization apre la richiesta senza premere Confronta. Mantenendo PLA, completate tutte le righe: Dettaglio 1h54m19s /39,1g/242 cambi; Equilibrato 1h46m16s /43,5g/242; Veloce 1h8m40s /32,1g/0. Infill PLA massimo 0,6.
+
+Accettando il profilo TEST SIMULATO PLA-CF sullo 0,8, solo il riempimento sparso passa a T3; pareti e superfici restano PLA. Tre risultati completati senza ripetere la domanda: Dettaglio 1h58m2s /41,4g/242; Equilibrato e Veloce 1h49m33s /45,5g/242. Questo fixture non dimostra compatibilita fisica PLA/PLA-CF e mostra che un ugello maggiore puo anche peggiorare il tempo. Nessun invio, movimento, riscaldamento o flash.
+
+![Esito del fixture con materiale alternativo](indx-materiale-alternativo-risultato.png)
+
+Verifica anche nella versione installata con quattro slot PLA: apertura della pagina avvia e completa automaticamente il confronto senza richiesta di materiale. Risultati confermati: 1h58m2s /41,4g/242; 1h49m33s /45,5g/242; 1h11m33s /38,0g/0. DLL installata uguale alla build verificata (SHA-256 87870f1152e91edf686b44ec57112130bcc2643d05ffc082c13e78e735b027fa).
