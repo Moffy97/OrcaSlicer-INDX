@@ -42,3 +42,5 @@ Test aggiunti: sincronizzazione inversa, richieste ripetute, conflitti, rifiuto 
 
 
 Le copie generate vengono confrontate dopo la stessa normalizzazione eseguita da Orca nel salvataggio. La migrazione dei vecchi controlli ricostruisce esclusivamente la precedente ereditarietà: non ignora altre modifiche locali. Le impronte sono registrate dal profilo realmente salvato, evitando falsi conflitti a ogni aggiornamento.
+
+Il confronto considera equivalente un valore singolo allo stesso valore ripetuto nelle varianti estrusore, come 260 rispetto a 260/260/260. Temperature, flow, note e valori diversi fra varianti restano distinti. Il test C++ verifica sia le equivalenze sia le modifiche reali da preservare.

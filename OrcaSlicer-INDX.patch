@@ -181,10 +181,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..bd12e83d
+index 00000000..00153989
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,239 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -197,6 +197,18 @@ index 00000000..bd12e83d
 +
 +namespace Slic3r { namespace Indx {
 +using Json = nlohmann::json;
++// Orca may expand a scalar filament vector to the physical extruder variants.
++// Repeating the same value changes representation, not a filament setting.
++inline Json canonical_profile_config(Json data) {
++    for(auto& item:data.items()) {
++        auto& value=item.value();
++        if(value.is_array() && value.size()>1 && std::all_of(value.begin()+1,value.end(),[&](const Json& v){return v==value.front();})) {
++            const auto first=value.front();value=Json::array({first});
++        }
++    }
++    return data;
++}
++
 +// Describe only locally changed selections, retaining the complete observed base
 +// for the printer's compare-and-swap validation (no cross-host clock ordering).
 +inline Json selection_changes(const Json& current,const Json& baseline,const Json& remote) {
@@ -556,7 +568,7 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..9fdfe43a
+index 00000000..b55b3ba4
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
 @@ -0,0 +1,1443 @@
@@ -898,7 +910,7 @@ index 00000000..9fdfe43a
 +    return entries;
 +}
 +std::string config_digest(const DynamicPrintConfig& config) {
-+    std::ostringstream out;config.save_to_json(out,"","User","2.5.0");return digest(out.str());
++    std::ostringstream out;config.save_to_json(out,"","User","2.5.0");return digest(Indx::canonical_profile_config(Json::parse(out.str())).dump());
 +}
 +void persist_library(const std::vector<LibraryEntry>& entries,bool reviewed=false){
 +    auto& collection=wxGetApp().preset_bundle->filaments;
@@ -913,7 +925,7 @@ index 00000000..9fdfe43a
 +        if(!e.source.empty())mapping[e.name]=e.source;
 +        const auto* existing=collection.find_preset(e.name,false);
 +        if(existing && (existing->filament_id!=e.id || !existing->can_overwrite()))throw std::runtime_error("Nome profilo gia usato: "+e.name);
-+        if(existing && existing->config==candidate){hashes[e.name]=config_digest(existing->config);continue;}
++        if(existing && config_digest(existing->config)==config_digest(candidate)){hashes[e.name]=config_digest(existing->config);continue;}
 +        bool unchanged=!existing || hashes.value(e.name,std::string())==config_digest(existing->config);
 +        if(existing && !unchanged && !e.source.empty()) {
 +            // Older publishers hashed before clone_presets cleared inheritance.
@@ -2407,10 +2419,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..4f011559
+index 00000000..be1feeef
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,294 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -2686,6 +2698,24 @@ index 00000000..4f011559
 +    CHECK(selection_changes(edited,edited,remote).empty());
 +    auto absent=original;absent.erase("0");
 +    CHECK(selection_changes(absent,original,remote).empty());
++}
++
++
++TEST_CASE("Repeated filament values do not create false synchronization conflicts", "[IndxChecks][SelectionSync]") {
++    const Json saved={{"nozzle_temperature",Json::array({"260"})},{"filament_flow_ratio",Json::array({"0.95"})},{"notes","My calibrated spool"}};
++    auto expanded=saved;
++    expanded["nozzle_temperature"]=Json::array({"260","260","260","260","260","260"});
++    expanded["filament_flow_ratio"]=Json::array({"0.95","0.95","0.95","0.95","0.95","0.95"});
++    CHECK(canonical_profile_config(saved)==canonical_profile_config(expanded));
++    expanded["nozzle_temperature"][3]="265";
++    CHECK(canonical_profile_config(saved)!=canonical_profile_config(expanded));
++    CHECK(canonical_profile_config(expanded)["nozzle_temperature"].size()==6);
++    expanded=saved;expanded["filament_flow_ratio"]=Json::array({"0.96"});
++    CHECK(canonical_profile_config(saved)!=canonical_profile_config(expanded));
++    expanded=saved;expanded["notes"]="User changed this profile";
++    CHECK(canonical_profile_config(saved)!=canonical_profile_config(expanded));
++    CHECK(canonical_profile_config(Json{{"empty",Json::array()}})["empty"].empty());
++    CHECK(canonical_profile_config(saved)==saved);
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644
