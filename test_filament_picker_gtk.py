@@ -29,12 +29,26 @@ with tempfile.TemporaryDirectory() as td:
  screen.add(panel.content);screen.show_all()
  assert isinstance(panel.brand,Gtk.ComboBoxText) and isinstance(panel.material,Gtk.ComboBoxText)
  assert isinstance(panel.product,Gtk.Label)
+ assert isinstance(panel.color,Gtk.ColorButton) and not isinstance(panel.color,Gtk.Entry)
+ panel.color.set_text('#3366CC');assert panel.color.get_text()=='#3366CC'
+ panel.color.clicked()
+ while Gtk.events_pending():Gtk.main_iteration_do(False)
+ chooser=next(w for w in Gtk.Window.list_toplevels() if isinstance(w,Gtk.ColorChooserDialog) and w.get_visible())
+ chosen=Gdk.RGBA();chosen.parse('#22AA66');chooser.set_rgba(chosen);chooser.response(Gtk.ResponseType.OK)
+ while Gtk.events_pending():Gtk.main_iteration_do(False)
+ assert panel.color.get_text()=='#22AA66',panel.color.get_text()
+ panel.color.clicked()
+ while Gtk.events_pending():Gtk.main_iteration_do(False)
+ chooser=next(w for w in Gtk.Window.list_toplevels() if isinstance(w,Gtk.ColorChooserDialog) and w.get_visible());chooser.set_rgba(Gdk.RGBA(1,0,0,1));chooser.response(Gtk.ResponseType.CANCEL)
+ while Gtk.events_pending():Gtk.main_iteration_do(False)
+ assert panel.color.get_text()=='#22AA66','Cancel changed swatch'
  assert panel.scope.get_active()==2
  assert options(panel.brand)==['','Marca A','Marca B'],options(panel.brand)
  assert 'ABS' not in options(panel.material)
  panel.brand.set_active_id('Marca A');panel.material.set_active_id('PETG')
  assert options(panel.profiles)==['A PETG'],options(panel.profiles)
  panel.profiles.set_active_id('A PETG');assert panel.selected['material']=='PETG'
+ panel.color.set_text('#22AA66')
  before={p.name:p.read_bytes() for p in Path(td).iterdir() if p.is_file()}
  def respond(accept,name=''):
   for w in Gtk.Window.list_toplevels():
@@ -49,6 +63,7 @@ with tempfile.TemporaryDirectory() as td:
  GLib.timeout_add(100,respond,True,'Bobina PETG verde');panel.assign()
  r=store.assigned(0);assert r and r['name']=='Bobina PETG verde',panel.status.get_text()
  assert r['brand']=='Marca A' and r['type']=='PETG'
+ assert r['color']=='#22AA66'
  uid=r['library_id'];panel.activate();assert panel.brand.get_active_id()=='Marca A'
  assert panel.material.get_active_id()=='PETG'
  GLib.timeout_add(100,respond,True,'PETG rinominato');panel.assign()

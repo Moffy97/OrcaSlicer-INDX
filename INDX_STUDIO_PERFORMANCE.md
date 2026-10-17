@@ -8,7 +8,7 @@ Correzione dimensioni display: scala esplicita anche per i testi interni dei con
 
 - **Panoramica:** schede Tn con diametro, Standard/CHT, filamento assegnato e stati PA/flow/portata. Una spunta richiede una calibrazione ancora valida, non il semplice salvataggio di un numero. Lo stato montaggio confermato indica la dichiarazione salvata, non il completamento del collaudo fisico.
 - **Navigazione laterale:** rimane visibile fra le otto pagine. Selezionare un tool o aprire una pagina non aggancia la testa.
-- **Filamenti:** scelta della base a sinistra, colore e temperature a destra, pulsante di conferma sempre visibile. Marca e materiale rimangono elenchi dipendenti. Il nome si sceglie alla conferma.
+- **Filamenti:** scelta della base a sinistra, colore e temperature a destra, pulsante di conferma sempre visibile. Il colore è un campione visivo: toccarlo apre la palette GTK. Non compaiono il campo HEX o pulsanti con i nomi dei colori. La panoramica mostra un piccolo campione al posto del codice. Marca e materiale rimangono elenchi dipendenti. Il nome si sceglie alla conferma.
 - **Tool e dock:** schede separate per ugello, dock, offset e percorso; salvataggio e test fisici in aree distinte. Per raggiungere i campi successivi scorrere il contenuto.
 - **Tema globale:** grafite, verde acqua, contrasti e campi ampi, pulsanti arrotondati, stesso aspetto anche nei pannelli standard. Rimangono le conferme delle azioni fisiche.
 
