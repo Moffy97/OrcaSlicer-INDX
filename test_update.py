@@ -13,6 +13,9 @@ with tempfile.TemporaryDirectory() as td:
  assert (ks/'panels/indx_setup.py').is_file()
  assert json.loads((config/'indx-installed-version.json').read_text())['version']=='0.3.0-preview'
  assert (ks/'panels/indx_machine_panel.py').is_file()
+ assert (ks/'panels/indx_ui.py').is_file()
+ assert (ks/'styles/indx-studio/style.css').is_file()
+ assert 'theme: indx-studio' in (config/'KlipperScreen.conf').read_text()
  subprocess.run(command,check=True)
  assert (config/'KlipperScreen.conf').read_text().count('[menu __main indx setup]')==1
  # User calibrations made after an update must survive a software rollback.
@@ -21,6 +24,8 @@ with tempfile.TemporaryDirectory() as td:
  assert (ks/'panels/indx_profiles.py').read_text()==old
  assert not (ks/'panels/indx_setup.py').exists()
  assert not (ks/'panels/indx_machine_panel.py').exists()
+ assert not (ks/'panels/indx_ui.py').exists()
+ assert not (ks/'styles/indx-studio/style.css').exists()
  assert (config/'KlipperScreen.conf').read_text()==original
  assert json.loads(data.read_text())['profiles']['new']=='keep me'
  assert not (config/'indx-installed-version.json').exists()

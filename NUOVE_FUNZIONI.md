@@ -1,12 +1,16 @@
 # Preview 0.3.0 - interfaccia diretta e configurazione dalla stampante
 
+## INDX Studio e Performance
+
+Nuova panoramica tool, navigazione laterale, filamenti a schede con conferma sempre visibile e tema globale KlipperScreen. Disponibile il processo Performance da collaudare: stampa fino a 8000 mm/s² e travel 12000 mm/s² / 400 mm/s. [Interfaccia, installazione e risultati](INDX_STUDIO_PERFORMANCE.md).
+
 ## Base di stampa più rapida
 
 Disponibile **0.20mm INDX - Base ottimizzata**: pareti 60/110 mm/s, infill 150, superfici superiori 50, travel 200; accelerazioni fino a 3000 mm/s². Primo strato, portata e PA conservati. Il collaudo fisico resta necessario. [Valori, confronto prima/dopo e importazione](PROFILO_BASE_OTTIMIZZATA.md).
 
 ## Un solo punto di inserimento
 
-In KlipperScreen aprire INDX. I pulsanti **Tool e dock, Filamenti, PA, Flow, Portata, Collaudo, Tool attivo** cambiano il contenuto della stessa area. Le schede T0, T1 e successive selezionano il tool da modificare. Standard/CHT e direzione dock sono interruttori diretti.
+In KlipperScreen aprire INDX. **Panoramica** mostra tool e calibrazioni. La navigazione laterale **Filamenti, Tool e dock, Pressure advance, Flow ratio, Portata massima, Collaudo, Cambia tool** cambia il contenuto della stessa area. Le schede T0, T1 e successive selezionano il tool da modificare. Standard/CHT e direzione dock sono interruttori diretti.
 
 In Orca il pulsante **INDX** apre uno spazio unico con tre pulsanti di selezione: **Info INDX**, **Config tool**, **Auto slicing optimization**. Non c'e un secondo editor connessione INDX: viene usata la connessione della stampante configurata nella sezione superiore di Orca. Le connessioni della preview precedente restano utilizzabili durante la migrazione.
 
