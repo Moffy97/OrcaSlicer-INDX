@@ -14,6 +14,7 @@ with tempfile.TemporaryDirectory() as td:
  assert json.loads((config/'indx-installed-version.json').read_text())['version']=='0.3.0-preview'
  assert (ks/'panels/indx_machine_panel.py').is_file()
  assert (ks/'panels/indx_ui.py').is_file()
+ assert (ks/'panels/indx_sync.py').is_file()
  assert (ks/'styles/indx-studio/style.css').is_file()
  assert 'theme: indx-studio' in (config/'KlipperScreen.conf').read_text()
  subprocess.run(command,check=True)
@@ -25,6 +26,7 @@ with tempfile.TemporaryDirectory() as td:
  assert not (ks/'panels/indx_setup.py').exists()
  assert not (ks/'panels/indx_machine_panel.py').exists()
  assert not (ks/'panels/indx_ui.py').exists()
+ assert not (ks/'panels/indx_sync.py').exists()
  assert not (ks/'styles/indx-studio/style.css').exists()
  assert (config/'KlipperScreen.conf').read_text()==original
  assert json.loads(data.read_text())['profiles']['new']=='keep me'

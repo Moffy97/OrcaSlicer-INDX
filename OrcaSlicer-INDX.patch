@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..05bbe7d2
+index 00000000..3f0b3c0e
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,78 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -34,7 +34,7 @@ index 00000000..05bbe7d2
 +
 +The touchscreen owns a schema-3 personal library in indx-filament-library.json. Stable UUIDs identify physical filament profiles independently of editable names. Profiles hold source references, brand, material, colour, temperatures and default flow settings. Calibration records and manual tool overrides are indexed by tool number, with the nozzle diameter on each calibration. PA, flow ratio and maximum volumetric speed therefore remain distinct for different passive nozzles. Generic catalogue sources and personal calibrated profiles have separate touchscreen lists.
 +
-+Orca's background publisher also imports the personal library when the filament editor has no unsaved edits. It saves detached user presets through PresetCollection, using a stable INDX filament identity for each library UUID and tool. Generated presets are excluded from the source catalogue to prevent feedback loops. Explicit sync additionally applies the assigned profiles and solid colours to the open project and sets manual filament mapping for the configured tool count on the current plate. Persistent library imports do not themselves change the project's filament assignments. Re-slicing is required to use changed material settings.
++Orca's background publisher also imports the personal library when the filament editor has no unsaved edits. It saves detached user presets through PresetCollection, using a stable INDX filament identity for each library UUID and tool. Generated presets are excluded from the source catalogue to prevent feedback loops. Explicit sync additionally applies the assigned profiles and solid colours to the open project and sets manual filament mapping for the configured tool count on the current plate. Idle background imports apply the assigned profiles and colors to their tool slots. Re-slicing is required to use changed material settings.
 +
 +INDX G-code sends PA to the shared Klipper extruder. An unenabled PA explicitly resets the shared feeder's previous value. Temperature commands address only the selected logical filament and omit a physical T parameter, while parked passive nozzles receive no preheat commands. Other printer configurations retain their existing behavior.
 +
@@ -90,6 +90,20 @@ index 00000000..05bbe7d2
 +The touchscreen can assign an uncalibrated standard copy directly from an Orca catalogue base, or save editable values as a personal profile. Standard copies carry no test provenance. Calibration promotes a standard copy to a separate personal identity so the original base remains reusable. Selecting a color for the currently assigned personal/standard record saves only its color; other unsaved fields are not committed. Color changes retain valid calibration provenance.
 +
 +The background publisher includes assignments in the library fingerprint. Once idle and free of dirty presets or modal workflows, it persists generated filament copies and applies assigned tool slots, colors, temperatures and valid calibration values to the project. Extra unassigned project slots are preserved. Local generated-profile conflicts defer automatic application and remain available for explicit comparison. This is configuration synchronization, never a print command. The tool page exposes a visual swatch using Orca's existing palette dialog; color storage remains the compatible single-color project fields.
++
++
++### Bidirectional selection synchronization and touchscreen responsiveness
++
++The publisher establishes a printer baseline before exporting user changes. It observes selected preset identities and solid project colors through the current physical tool map. A unique assignment per physical tool is exported; conflicting virtual slots are excluded. Standard/user Orca presets become uncalibrated stock records on the printer. INDX identities recall an existing library record with its applicable calibration provenance. Changing one shared record's color creates a separate identity for that tool so another loaded tool does not change color unintentionally.
++
++A schema-1 request carries a unique request ID and each modified tool's expected assignment, complete library record and hardware declaration. The Linux metadata-only consumer compares all expected values under the same advisory lock used by touchscreen saves. Any mismatch rejects the whole batch; the Orca publisher pauses and exposes the conflict for explicit reviewed synchronization. Requests are idempotent. A write-ahead snapshot recovers interrupted library/assignment commits before later local writes. The consumer defers while printing or paused and never sends G-code. Its systemd unit starts independently of the active touch page and is included in the installer's backup/rollback handling. Cross-host wall clocks are not used to choose a winner.
++
++Orca waits for the matching acknowledgement and does not apply a stale response over a selection made during the network request. Import results become the next local baseline, preventing echo requests. A host, printer or reviewed-sync generation change discards stale responses. Offline requests keep their original expected base and cannot overwrite later touch edits.
++
++KlipperScreen caches parsed JSON by path, nanosecond mtime, size and inode; mutable reads are defensive copies. Catalogue snapshots are read-only and decompressed once per file identity. Dashboard pages stay inside a persistent Gtk.Stack with no transitions and non-homogeneous sizing. Overview cards and inactive page lists are rebuilt only when relevant files change. The visible filament page polls lightweight file revisions once a second and refreshes saved records only when no local form draft exists. Navigating away and back preserves unsaved fields. Overview cards display effective PA, flow ratio and maximum volumetric speed even when stock or estimated, separately labelled from verified calibrations.
++
++
++Automatic optimization processes and adaptive-Z variants are project-embedded presets. The workspace reuses a labelled slot for each mode and alternative, preserving the native project save/restore behavior without creating user-directory presets for every configuration hash. Existing non-project names are not overwritten. Permanent starting processes are grouped by nozzle diameter and requested layer height, separately from the three optimization modes. The used-nozzle cap still takes precedence; process presets do not change the hardware declaration or the model tool.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -167,10 +181,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..0ee6adb2
+index 00000000..bd12e83d
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,227 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -183,6 +197,24 @@ index 00000000..0ee6adb2
 +
 +namespace Slic3r { namespace Indx {
 +using Json = nlohmann::json;
++// Describe only locally changed selections, retaining the complete observed base
++// for the printer's compare-and-swap validation (no cross-host clock ordering).
++inline Json selection_changes(const Json& current,const Json& baseline,const Json& remote) {
++    Json changes=Json::array();
++    const auto assignments=remote.value("assignments",Json::object());
++    const auto records=remote.value("library",Json::object()).value("profiles",Json::object());
++    const auto hardware=remote.value("hardware",Json::object());
++    for(auto it=current.begin();it!=current.end();++it) {
++        if(baseline.contains(it.key()) && baseline[it.key()]==it.value())continue;
++        const int tool=std::stoi(it.key());
++        const auto assigned=assignments.value(it.key(),Json());
++        const auto id=assigned.is_object()?assigned.value("library_id",std::string()):std::string();
++        changes.push_back({{"tool",tool},{"desired",it.value()},{"expected_assignment",assigned},
++            {"expected_record",records.value(id,Json())},{"expected_setup",hardware}});
++    }
++    return changes;
++}
++
 +// Accept only a complete, explicitly confirmed touchscreen declaration.
 +// An offline or incomplete response must never shrink a saved printer profile.
 +inline Json confirmed_tools(const Json& remote) {
@@ -524,10 +556,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..f3e87293
+index 00000000..9fdfe43a
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1359 @@
+@@ -0,0 +1,1443 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -607,6 +639,8 @@ index 00000000..f3e87293
 +using Json = nlohmann::json;
 +constexpr const char* catalog_file = "indx-orca-catalog.json.z";
 +bool foreground_sync = false;
++bool auto_sync_conflict = false;
++unsigned sync_generation=0;
 +size_t tool_count() {
 +    const auto* sizes=wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
 +    return sizes?sizes->values.size():0;
@@ -720,6 +754,17 @@ index 00000000..f3e87293
 +        .on_error([&](std::string body,std::string err,unsigned){error=err.empty()?body:err;}).perform_sync();
 +    if (!error.empty()) throw std::runtime_error("Pubblicazione catalogo fallita: "+error);
 +}
++void publish_sync_request(const std::string& url,const Json& request) {
++    const std::string path=wxFileName::CreateTempFileName("indx_sync_").ToUTF8().data();
++    struct Remove {std::string path;~Remove(){boost::system::error_code ec;boost::filesystem::remove(path,ec);}} cleanup{path};
++    {boost::nowide::ofstream out(path,std::ios::binary);out<<request.dump();if(!out)throw std::runtime_error(_u8L("Impossibile creare la richiesta filamenti."));}
++    std::string error;
++    Http::post(url+"/server/files/upload").timeout_connect(2).timeout_max(15)
++        .form_add("root","config").form_add("path","")
++        .form_add_file("file",boost::filesystem::path(path),"indx-orca-sync-request.json")
++        .on_error([&](std::string body,std::string err,unsigned){error=err.empty()?body:err;}).perform_sync();
++    if(!error.empty())throw std::runtime_error(error);
++}
 +Json read_printer(const std::string& url) {
 +    Json remote={{"online",false},{"host",url}};
 +    try {
@@ -741,20 +786,26 @@ index 00000000..f3e87293
 +    remote["observed_at"]=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 +    return remote;
 +}
-+struct NetworkResult {Json assignments;Json pa;std::string error;std::string fingerprint;Json library;Json remote;};
-+NetworkResult transfer(const std::string& url, const Json& catalog, bool import, const std::string& previous = {}) {
++struct NetworkResult {Json assignments;Json pa;std::string error;std::string fingerprint;Json library;Json remote;Json ack;};
++NetworkResult transfer(const std::string& url, const Json& catalog, bool import, const std::string& previous = {},const Json& command = Json()) {
 +    try {
 +        auto request_text=get(url+"/server/files/config/indx-orca-catalog-request.json",true);
 +        auto request=request_text.empty()?Json::object():Json::parse(request_text);
 +        auto payload=catalog;payload["request_id"]=request.value("request_id",std::string());
 +        auto stable=payload;stable.erase("generated_at");auto fingerprint=digest(stable.dump());
 +        if(import || fingerprint!=previous)publish(url,payload);
++        Json ack=Json::object();
++        if(!command.is_null()) {
++            publish_sync_request(url,command);
++            const auto body=get(url+"/server/files/config/indx-orca-sync-ack.json",true);
++            if(!body.empty())ack=Json::parse(body);
++        }
 +        auto library_text=get(url+"/server/files/config/indx-filament-library.json",true);
 +        Json library=library_text.empty()?Json::object():Json::parse(library_text);
-+        if (!import) return {{},{},{},fingerprint,std::move(library),read_printer(url)};
++        if (!import) return {{},{},{},fingerprint,std::move(library),read_printer(url),std::move(ack)};
 +        auto a=get(url+"/server/files/config/indx-filament-assignments.json",true);
 +        auto p=get(url+"/server/files/config/indx-pa-results.json",true);
-+        return {a.empty()?Json::object():Json::parse(a),p.empty()?Json::object():Json::parse(p),{},fingerprint,std::move(library),read_printer(url)};
++        return {a.empty()?Json::object():Json::parse(a),p.empty()?Json::object():Json::parse(p),{},fingerprint,std::move(library),read_printer(url),std::move(ack)};
 +    } catch(const std::exception& e) {return {{},{},e.what()};}
 +}
 +
@@ -858,14 +909,22 @@ index 00000000..f3e87293
 +    const auto hash_raw=wxGetApp().app_config->get("indx_generated_hashes");
 +    Json hashes=hash_raw.empty()?Json::object():Json::parse(hash_raw),conflicts=Json::array();
 +    for(const auto& e:entries){
-+        auto candidate=e.config;candidate.option<ConfigOptionStrings>("filament_settings_id",true)->values={e.name};
++        auto candidate=e.config;candidate.option<ConfigOptionString>("inherits",true)->value.clear();candidate.option<ConfigOptionStrings>("filament_settings_id",true)->values={e.name};
 +        if(!e.source.empty())mapping[e.name]=e.source;
 +        const auto* existing=collection.find_preset(e.name,false);
 +        if(existing && (existing->filament_id!=e.id || !existing->can_overwrite()))throw std::runtime_error("Nome profilo gia usato: "+e.name);
 +        if(existing && existing->config==candidate){hashes[e.name]=config_digest(existing->config);continue;}
-+        if(existing && !reviewed && hashes.value(e.name,std::string())!=config_digest(existing->config)){
-+            conflicts.push_back(e.name);continue;
++        bool unchanged=!existing || hashes.value(e.name,std::string())==config_digest(existing->config);
++        if(existing && !unchanged && !e.source.empty()) {
++            // Older publishers hashed before clone_presets cleared inheritance.
++            // Reconstruct only that normalization, never ignore other local edits.
++            if(const auto* source=collection.find_preset(e.source,false)) {
++                auto legacy=existing->config;
++                legacy.option<ConfigOptionString>("inherits",true)->value=source->inherits();
++                unchanged=hashes.value(e.name,std::string())==config_digest(legacy);
++            }
 +        }
++        if(existing && !reviewed && !unchanged){conflicts.push_back(e.name);continue;}
 +        if(existing) {
 +            const auto folder=boost::filesystem::path(data_dir())/"indx-profile-backups";
 +            boost::filesystem::create_directories(folder);
@@ -886,6 +945,8 @@ index 00000000..f3e87293
 +    std::vector<const Preset*> pointers;for(const auto& p:copies)pointers.push_back(&p);
 +    std::vector<std::string> failures;
 +    if(!collection.clone_presets(pointers,failures,[](Preset&,Preset::Type&){},true))throw std::runtime_error(_u8L("Salvataggio libreria Orca fallito."));
++    for(const auto& copy:copies)if(const auto* saved=collection.find_preset(copy.name,false))hashes[copy.name]=config_digest(saved->config);
++    wxGetApp().app_config->set("indx_generated_hashes",hashes.dump());
 +    // Replace only older generated names with the same stable identity (rename).
 +    std::vector<std::string> obsolete;
 +    for(const auto& p:collection)for(const auto& e:entries)
@@ -916,10 +977,10 @@ index 00000000..f3e87293
 +    if(std::abs(layer->value-height)<1e-6 && std::abs(first->value-initial)<1e-6)return false;
 +    layer->value=height;first->value=initial;
 +    std::ostringstream value;value.imbue(std::locale::classic());value<<std::fixed<<std::setprecision(3)<<height;
-+    const std::string name="INDX h"+value.str()+" - "+digest(base+bundle.printers.get_edited_preset().name).substr(0,10);
++    const std::string name=base+" - Z adattata";
 +    const auto owned_raw=app->get("indx_auto_layer_profiles");Json owned=owned_raw.empty()?Json::object():Json::parse(owned_raw);
-+    if(bundle.prints.find_preset(name,false) && !owned.contains(name))throw std::runtime_error(_u8L("Il nome del processo adattato esiste gia: rinominalo prima di cambiare gli ugelli."));
-+    bundle.prints.save_current_preset(name,false,false,&process);owned[name]=base;
++    if(const auto* existing=bundle.prints.find_preset(name,false);existing && !existing->is_project_embedded && !owned.contains(name))throw std::runtime_error(_u8L("Il nome del processo adattato esiste gia: rinominalo prima di cambiare gli ugelli."));
++    bundle.prints.save_current_preset(name,false,true,&process);owned[name]=base;
 +    app->set("indx_auto_layer_profiles",owned.dump());
 +    app->set("indx_auto_layer",Json({{"profile",name},{"base",base},{"requested",wanted},{"requested_first",wanted_first},{"applied",height},{"applied_first",initial}}).dump());
 +    wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);
@@ -1076,16 +1137,49 @@ index 00000000..f3e87293
 +    wxGetApp().plater()->sidebar().update_all_preset_comboboxes();wxGetApp().plater()->update_filament_colors_in_full_config();bundle.export_selections(*wxGetApp().app_config);
 +}
 +
++// Only a unique physical-tool assignment is exported. Conflicting virtual slots
++// are project choices and must not silently redefine a loaded printer filament.
++Json local_tool_filaments() {
++    const auto& bundle=*wxGetApp().preset_bundle;
++    const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
++    const auto* maps=bundle.project_config.option<ConfigOptionInts>("filament_map");
++    Json result=Json::object();std::set<int> ambiguous;
++    for(size_t f=0;f<bundle.filament_presets.size();++f) {
++        const int tool=maps && f<maps->values.size()?maps->values[f]-1:int(f);
++        if(tool<0 || size_t(tool)>=tool_count() || ambiguous.count(tool))continue;
++        const auto* preset=bundle.filaments.find_preset(bundle.filament_presets[f],false);
++        if(!preset)continue;
++        const auto color=colors && f<colors->values.size()?colors->values[f]:std::string("#FFFFFF");
++        Json value={{"color",color}};
++        if(preset->filament_id.rfind("INDX:",0)==0 && preset->filament_id.size()>37)value["library_id"]=preset->filament_id.substr(5,32);
++        else value["profile_id"]=preset->name;
++        const auto key=std::to_string(tool);
++        if(result.contains(key) && result[key]!=value){result.erase(key);ambiguous.insert(tool);}
++        else result[key]=std::move(value);
++    }
++    return result;
++}
++Json reverse_request(const Json& current,const Json& baseline,const Json& remote) {
++    auto changes=Indx::selection_changes(current,baseline,remote);
++    if(changes.empty())return Json();
++    const auto token=digest(changes.dump()+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
++    return {{"schema",1},{"request_id",token},{"changes",std::move(changes)}};
++}
++
 +struct Publisher {
 +    wxTimer timer;
 +    std::future<NetworkResult> pending;
-+    std::string last_hash,pending_hash,last_library_hash,pending_printer,pending_url;
++    std::string last_hash,pending_hash,last_library_hash,pending_printer,pending_url,pending_context;
 +    std::chrono::steady_clock::time_point next;
++    Json baseline,remote_base,command,command_local;
++    std::string context;
 +    explicit Publisher(wxWindow* owner,int id):timer(owner,id){}
 +    void tick() {
-+        if(foreground_sync)return;
++        if(foreground_sync || auto_sync_conflict)return;
 +        // Do not change an edited profile, an active slice, or a modal workflow.
 +        auto& bundle=*wxGetApp().preset_bundle;
++        const auto current_context=bundle.printers.get_edited_preset().name+host_url()+std::to_string(sync_generation);
++        if(context!=current_context){context=current_context;baseline=Json();remote_base=Json();command=Json();last_library_hash.clear();last_hash.clear();}
 +        if(wxGetApp().plater()->is_background_process_slicing() || wxGetApp().plater()->is_export_gcode_scheduled() ||
 +            bundle.printers.get_edited_preset().is_dirty || bundle.filaments.get_edited_preset().is_dirty ||
 +            bundle.prints.get_edited_preset().is_dirty)return;
@@ -1093,8 +1187,25 @@ index 00000000..f3e87293
 +        if (pending.valid()) {
 +            if (pending.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
 +            auto result=pending.get();
-+            if(pending_printer!=bundle.printers.get_edited_preset().name || pending_url!=host_url())return;
++            if(pending_context!=context || pending_printer!=bundle.printers.get_edited_preset().name || pending_url!=host_url())return;
 +            if(result.error.empty()) try {
++                const auto local=local_tool_filaments();
++                bool local_changed=!baseline.is_null() && local!=baseline;
++                if(!command.is_null()) {
++                    if(result.ack.value("request_id",std::string())!=command.value("request_id",std::string())) {
++                        wxGetApp().app_config->set("indx_auto_sync_error",_u8L("Aggiornamento filamenti inviato: attendo il touchscreen."));return;
++                    }
++                    if(result.ack.value("status",std::string())!="applied") {
++                        auto_sync_conflict=true;throw std::runtime_error(result.ack.value("message",_u8L("Conflitto filamenti: usa Sincronizza filamenti per confrontare.")));
++                    }
++                    baseline=command_local;command=Json();remote_base=result.remote;local_changed=local!=baseline;
++                }
++                if(local_changed) {
++                    command=reverse_request(local,baseline,remote_base);command_local=local;
++                    // Never overwrite a user selection made while the network was working.
++                    if(!command.is_null()){next=std::chrono::steady_clock::now();}
++                    return;
++                }
 +                if(is_indx_printer())import_printer_tools(result.remote);
 +                last_hash=result.fingerprint;
 +                if(!result.remote.empty())wxGetApp().app_config->set("indx_printer_snapshot",result.remote.dump());
@@ -1107,6 +1218,7 @@ index 00000000..f3e87293
 +                        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();last_library_hash=signature;
 +                        wxGetApp().app_config->set("indx_auto_sync_error","");
 +                    }
++                    baseline=local_tool_filaments();remote_base=result.remote;
 +                }
 +            }catch(const std::exception& e){wxGetApp().app_config->set("indx_auto_sync_error",e.what());BOOST_LOG_TRIVIAL(error)<<"INDX auto sync: "<<e.what();next=std::chrono::steady_clock::now()+std::chrono::seconds(30);}
 +            else next=std::chrono::steady_clock::now()+std::chrono::seconds(30);
@@ -1115,8 +1227,12 @@ index 00000000..f3e87293
 +        next=std::chrono::steady_clock::now()+std::chrono::seconds(15);
 +        auto data=catalog_snapshot();auto fingerprint=data;fingerprint.erase("generated_at");
 +        pending_hash=digest(fingerprint.dump());
-+        auto url=host_url();auto previous=last_hash;pending_url=url;pending_printer=bundle.printers.get_edited_preset().name;
-+        pending=std::async(std::launch::async,[url,previous,data=std::move(data)](){return transfer(url,data,false,previous);});
++        if(command.is_null() && !baseline.is_null() && !remote_base.is_null())try {
++            const auto local=local_tool_filaments();command=reverse_request(local,baseline,remote_base);command_local=local;
++        }catch(const std::exception& e){wxGetApp().app_config->set("indx_auto_sync_error",e.what());return;}
++        auto outgoing=command;
++        auto url=host_url();auto previous=last_hash;pending_url=url;pending_context=context;pending_printer=bundle.printers.get_edited_preset().name;
++        pending=std::async(std::launch::async,[url,previous,outgoing,data=std::move(data)](){return transfer(url,data,false,previous,outgoing);});
 +    }
 +};
 +}
@@ -1205,15 +1321,14 @@ index 00000000..f3e87293
 +        for(int i=0;i<6;++i)process.config.set_key_value(fields[i],new ConfigOptionInt(roles.at(keys[i]).at("filament").get<int>()));
 +        process.config.set_key_value("infill_combination",new ConfigOptionBool(true));
 +        const bool changed=!process.config.diff(bundle.prints.get_edited_preset().config).empty();
-+        // Key by resulting settings rather than the previous proposal's name. Reapplying a
-+        // mode reuses its saved process; edited processes are never overwritten.
-+        Json settings=Json::object();
-+        for(const auto& key:process.config.keys())settings[key]=process.config.option(key)->serialize();
-+        const auto base_name="INDX auto - "+digest(settings.dump()).substr(0,12);
++        // Automatic comparison variants belong to this project. Reuse one slot
++        // per mode/alternative instead of saving a new user preset per hash.
++        const std::string mode=style==0?"Dettaglio":style==1?"Equilibrato":"Veloce";
++        const std::string base_name="INDX - "+mode+(infill_filament>0?" - materiale alternativo":"")+" (progetto)";
 +        auto name=base_name;
 +        for(int suffix=2;const auto* existing=bundle.prints.find_preset(name,false);++suffix) {
-+            if(existing->config.diff(process.config).empty())break;
-+            name=base_name+" - "+std::to_string(suffix);
++            if(existing->is_project_embedded)break;
++            name=base_name+" "+std::to_string(suffix);
 +        }
 +        wxGetApp().plater()->take_snapshot("Proposta tool INDX");
 +        if(remap) {
@@ -1223,7 +1338,7 @@ index 00000000..f3e87293
 +            if(current){current->set_filament_maps(proposal_maps);current->set_filament_map_mode(fmmManual);}
 +        }
 +        if(changed) {
-+            if(!bundle.prints.find_preset(name,false))bundle.prints.save_current_preset(name,false,false,&process);
++            bundle.prints.save_current_preset(name,false,true,&process);
 +            wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);
 +        }
 +        if(changed || remap)wxGetApp().load_current_presets(false,false);
@@ -1436,7 +1551,7 @@ index 00000000..f3e87293
 +        const auto hashes=hashes_raw.empty()?Json::object():Json::parse(hashes_raw);
 +        bool local_changes=false;
 +        for(const auto& e:entries)if(const auto* old=bundle.filaments.find_preset(e.name,false)) {
-+            auto candidate=e.config;candidate.option<ConfigOptionStrings>("filament_settings_id",true)->values={e.name};
++            auto candidate=e.config;candidate.option<ConfigOptionString>("inherits",true)->value.clear();candidate.option<ConfigOptionStrings>("filament_settings_id",true)->values={e.name};
 +            if(old->config!=candidate && hashes.value(e.name,std::string())!=config_digest(old->config))local_changes=true;
 +        }
 +        if((!output || local_changes) && wxMessageBox(_L("Salvare la libreria personale e applicare queste assegnazioni?\n\n")+overview,_L("Sincronizza INDX"),wxYES_NO|wxICON_QUESTION,parent)!=wxYES)return;
@@ -1473,6 +1588,7 @@ index 00000000..f3e87293
 +        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();
 +        wxGetApp().plater()->update_filament_colors_in_full_config();
 +        bundle.export_selections(*wxGetApp().app_config);
++        auto_sync_conflict=false;++sync_generation;
 +        const auto completed=_L("Libreria personale salvata: colore, temperature, PA, flow e flusso massimo. Assegnazioni applicate. Salva il progetto e rislicera prima di stampare.");
 +        if(output)output->SetValue(completed);else wxMessageBox(completed,"INDX",wxOK|wxICON_INFORMATION,parent);
 +    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Sincronizza INDX"),wxOK|wxICON_ERROR,parent);}
@@ -2291,10 +2407,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..7cebf5e9
+index 00000000..4f011559
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,276 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -2539,6 +2655,37 @@ index 00000000..7cebf5e9
 +    CHECK(material_comparison_choices(rows)==std::vector<int>{0,0,0});
 +    rows[0]["filament"]=4;rows[0]["alternative"]=0.;
 +    CHECK(material_comparison_choices(rows)==std::vector<int>{0,0,0});
++}
++
++
++TEST_CASE("Filament selections export only local changes with their complete observed base", "[IndxChecks][SelectionSync]") {
++    const Json original={{"0",{{"library_id","abc"},{"color","#112233"}}},{"1",{{"profile_id","Generic PLA"},{"color","#FFFFFF"}}}};
++    const Json assignment={{"library_id","abc"},{"name","Measured spool"},{"color","#112233"}};
++    const Json record={{"name","Measured spool"},{"calibration_variants",{{"0:0.400:standard",{{"pa",.03}}}}}};
++    const Json hardware={{"schema",2},{"tools",Json::array({{{"diameter",.4}}})}};
++    const Json remote={{"assignments",{{"0",assignment}}},{"library",{{"profiles",{{"abc",record}}}}},{"hardware",hardware}};
++    CHECK(selection_changes(original,original,remote).empty());
++    auto edited=original;edited["0"]["color"]="#AA2277";
++    auto changes=selection_changes(edited,original,remote);
++    REQUIRE(changes.size()==1);
++    CHECK(changes[0]["tool"]==0);
++    CHECK(changes[0]["desired"]["color"]=="#AA2277");
++    CHECK(changes[0]["expected_assignment"]==assignment);
++    CHECK(changes[0]["expected_record"]==record);
++    CHECK(changes[0]["expected_setup"]==hardware);
++    // A preset switch exports the source identity, not a fabricated calibration.
++    edited["0"]={{"profile_id","Generic PETG"},{"color","#AA2277"}};
++    changes=selection_changes(edited,original,remote);
++    CHECK(changes[0]["desired"]["profile_id"]=="Generic PETG");
++    CHECK_FALSE(changes[0]["desired"].contains("calibrations"));
++    edited["1"]["color"]="#000000";
++    changes=selection_changes(edited,original,remote);
++    REQUIRE(changes.size()==2);
++    CHECK(changes[1]["expected_assignment"].is_null());
++    CHECK(changes[1]["expected_record"].is_null());
++    CHECK(selection_changes(edited,edited,remote).empty());
++    auto absent=original;absent.erase("0");
++    CHECK(selection_changes(absent,original,remote).empty());
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

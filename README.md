@@ -9,6 +9,7 @@ Integrazione sperimentale tra una build personalizzata di **OrcaSlicer** e **Kli
 **Interfaccia diretta su Orca e KlipperScreen, con pulsanti di selezione al posto dei sottomenu.** Numero tool, diametri, Standard/CHT, dock e offset si gestiscono dal touchscreen. Orca riceve il montaggio e mostra i dati nello spazio INDX; la connessione resta nella sezione stampante.
 
 - [Guida completa illustrata al software](Guida_completa_INDX_Orca_KlipperScreen.pdf)
+- [Profili per diametro ugello e altezza layer](PROFILI_ORDINATI.md)
 - [Procedura e nuovi comandi](NUOVE_FUNZIONI.md)
 - [Verifiche della preview 0.3](TEST_PREVIEW_03.md)
 
@@ -20,6 +21,8 @@ python install_klipperscreen.py --check
 ```
 
 L'installatore supporta `--rollback PERCORSO_BACKUP` con le directory KlipperScreen/config. Il ripristino riguarda software e menu e mantiene filamenti/calibrazioni attuali.
+
+La selezione di filamento e colore si sincronizza **nei due sensi** fra Orca e KlipperScreen. La panoramica mostra anche i valori standard; le pagine touch mantengono le bozze e riusano i dati in memoria. Dettagli e prove in [Colori e filamenti](FILAMENTI_STANDARD_PERSONALIZZATI.md). Per attivare il servizio Linux aggiungere `--sync-service` ai percorsi di installazione e `--restart`; il servizio viene incluso nel rollback.
 
 ## Funzioni
 

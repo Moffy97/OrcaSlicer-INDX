@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "families": {
+    "0.2": [
+      0.06,
+      0.08,
+      0.1,
+      0.12,
+      0.14
+    ],
+    "0.4": [
+      0.1,
+      0.12,
+      0.14,
+      0.16,
+      0.2,
+      0.24,
+      0.28
+    ],
+    "0.6": [
+      0.16,
+      0.2,
+      0.24,
+      0.28,
+      0.3,
+      0.32,
+      0.36,
+      0.4,
+      0.42
+    ],
+    "0.8": [
+      0.2,
+      0.24,
+      0.28,
+      0.3,
+      0.32,
+      0.36,
+      0.4,
+      0.42,
+      0.48,
+      0.56
+    ]
+  },
+  "installed": [
+    "INDX - Ugello 0.40 - Layer 0.10",
+    "INDX - Ugello 0.40 - Layer 0.12",
+    "INDX - Ugello 0.40 - Layer 0.14",
+    "INDX - Ugello 0.40 - Layer 0.16",
+    "INDX - Ugello 0.40 - Layer 0.20",
+    "INDX - Ugello 0.40 - Layer 0.24",
+    "INDX - Ugello 0.40 - Layer 0.28",
+    "INDX - Ugello 0.60 - Layer 0.16",
+    "INDX - Ugello 0.60 - Layer 0.20",
+    "INDX - Ugello 0.60 - Layer 0.24",
+    "INDX - Ugello 0.60 - Layer 0.28",
+    "INDX - Ugello 0.60 - Layer 0.30",
+    "INDX - Ugello 0.60 - Layer 0.32",
+    "INDX - Ugello 0.60 - Layer 0.36",
+    "INDX - Ugello 0.60 - Layer 0.40",
+    "INDX - Ugello 0.60 - Layer 0.42",
+    "INDX - Ugello 0.80 - Layer 0.20",
+    "INDX - Ugello 0.80 - Layer 0.24",
+    "INDX - Ugello 0.80 - Layer 0.28",
+    "INDX - Ugello 0.80 - Layer 0.30",
+    "INDX - Ugello 0.80 - Layer 0.32",
+    "INDX - Ugello 0.80 - Layer 0.36",
+    "INDX - Ugello 0.80 - Layer 0.40",
+    "INDX - Ugello 0.80 - Layer 0.42",
+    "INDX - Ugello 0.80 - Layer 0.48",
+    "INDX - Ugello 0.80 - Layer 0.56"
+  ],
+  "software_layer_cap_ratio": 0.7,
+  "preset_sets_do_not_change_hardware": true
+}

@@ -1,7 +1,7 @@
 """Verified local panel update with preview, backup and rollback. No printer G-code."""
 import argparse,hashlib,json,os,py_compile,re,shutil,subprocess,tempfile,time,zipfile
 from pathlib import Path
-NAMES=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py','indx_commissioning.py','indx_setup.py','indx_tools.py','indx_machine.py','indx_machine_panel.py','indx_dashboard.py','indx_ui.py']
+NAMES=['indx_profiles.py','indx_filaments.py','indx_pa.py','indx_flow_tests.py','indx_flow.py','indx_max_flow.py','indx_commissioning.py','indx_setup.py','indx_tools.py','indx_machine.py','indx_machine_panel.py','indx_dashboard.py','indx_ui.py','indx_sync.py']
 ASSETS=['indx-ui.css']
 
 def target_file(name,ks,config):
@@ -17,20 +17,59 @@ def package(root):
  if version.get('protocols')!={'catalog':2,'library':3,'hardware':2}:raise ValueError('Unsupported protocol versions')
  return version
 
+SERVICE=Path('/etc/systemd/system/indx-filament-sync.service')
+def service_command(*args):
+ subprocess.run(['sudo','-n','systemctl',*args],check=True)
+def install_sync_service(ks,config,backup):
+ import pwd
+ if os.name!='posix':raise ValueError('The background sync service requires Linux/systemd')
+ owner=pwd.getpwuid(config.stat().st_uid).pw_name
+ state={'unit':SERVICE.read_text() if SERVICE.exists() else None,
+        'enabled':subprocess.run(['systemctl','is-enabled','--quiet',SERVICE.name]).returncode==0,
+        'active':subprocess.run(['systemctl','is-active','--quiet',SERVICE.name]).returncode==0}
+ (backup/'sync-service.json').write_text(json.dumps(state))
+ # Quoted systemd paths are independent of the calling shell; reject line injection.
+ def quoted(path):
+  value=str(path)
+  if any(c in value for c in ('\n','\r','%','"','\\')):raise ValueError('Unsupported service path')
+  return '"'+value+'"'
+ unit='[Unit]\nDescription=INDX filament metadata synchronization\nAfter=moonraker.service\n\n[Service]\nType=simple\nUser='+owner+'\nExecStart=/usr/bin/python3 '+quoted(ks/'panels/indx_sync.py')+'\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths='+quoted(config)+'\n\n[Install]\nWantedBy=multi-user.target\n'
+ staged=backup/'new-sync.service';staged.write_text(unit)
+ subprocess.run(['sudo','-n','install','-m','644',str(staged),str(SERVICE)],check=True)
+ service_command('daemon-reload');service_command('enable',SERVICE.name);service_command('restart',SERVICE.name)
+def restore_sync_service(backup):
+ saved=backup/'sync-service.json'
+ if not saved.exists():return
+ state=json.loads(saved.read_text())
+ service_command('stop',SERVICE.name)
+ if state['unit'] is None:
+  service_command('disable',SERVICE.name)
+  subprocess.run(['sudo','-n','rm','--',str(SERVICE)],check=True)
+ else:
+  staged=backup/'restore-sync.service';staged.write_text(state['unit'])
+  subprocess.run(['sudo','-n','install','-m','644',str(staged),str(SERVICE)],check=True)
+ service_command('daemon-reload')
+ if state['unit'] is not None:
+  service_command('enable' if state['enabled'] else 'disable',SERVICE.name)
+ return state['unit'] is not None and state['active']
+
 def restore(backup,ks,config):
  manifest=json.loads((backup/'rollback.json').read_text())
  if manifest.get('ks')!=str(ks) or manifest.get('config')!=str(config):raise ValueError('Backup belongs to a different installation')
  for name,digest in manifest['files'].items():
   if name not in NAMES+ASSETS+['KlipperScreen.conf','indx-installed-version.json']:raise ValueError('Unexpected backup file')
   if digest is not None and hashlib.sha256((backup/name).read_bytes()).hexdigest()!=digest:raise ValueError('Damaged backup: '+name)
+ restart_sync=restore_sync_service(backup)
  for name,digest in manifest['files'].items():
   target=target_file(name,ks,config)
   if digest is None:target.unlink(missing_ok=True)
   else:shutil.copy2(backup/name,target)
+ if restart_sync:service_command('start',SERVICE.name)
 
 def main():
  parser=argparse.ArgumentParser(description=__doc__)
  parser.add_argument('--klipperscreen-dir',type=Path);parser.add_argument('--config-dir',type=Path)
+ parser.add_argument('--sync-service',action='store_true',help='Install the Linux background filament sync service, with rollback')
  parser.add_argument('--check',action='store_true',help='Verify package, protocols and syntax without installing')
  parser.add_argument('--rollback',type=Path,help='Restore named backup; keeps current filament/calibration data')
  parser.add_argument('--restart',action='store_true',help='Restart KlipperScreen after successful install/rollback')
@@ -84,6 +123,7 @@ def main():
     temp=config/'KlipperScreen.conf.indx-tmp';temp.write_text(text,encoding='utf-8');os.replace(temp,config/'KlipperScreen.conf')
     (config/'indx-installed-version.json').write_text(json.dumps(version,indent=2),encoding='utf-8')
     if not (config/'indx-pa-bases.json').exists():(config/'indx-pa-bases.json').write_bytes(archive.read('touchscreen/legacy-bases.json'))
+    if args.sync_service:install_sync_service(ks,config,backup)
    except Exception:
     restore(backup,ks,config);raise
    print('Installed preview',version['version'],'Backup:',backup)

@@ -10,6 +10,6 @@ with tempfile.TemporaryDirectory() as td,zipfile.ZipFile(Path(__file__).with_nam
   if not entry.filename.endswith('.py'):continue
   if name.parts[0] not in ('touchscreen','tests'):raise ValueError('Unexpected archive entry')
   dest=root.joinpath(*name.parts);dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(archive.read(entry))
- for name in ['test-native-protocol.py','test-curated-library.py','test-nozzle-variants.py','test-preflight-profiles.py','test-commissioning.py','test-machine-config.py','test-standard-filaments.py']:
+ for name in ['test-native-protocol.py','test-curated-library.py','test-nozzle-variants.py','test-preflight-profiles.py','test-commissioning.py','test-machine-config.py','test-standard-filaments.py','test-bidirectional-sync.py']:
   subprocess.run([sys.executable,str(root/'tests'/name)],cwd=root,check=True)
 print('All isolated profile, hardware-variant and G-code generator tests passed. No printer contacted.')
