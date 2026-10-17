@@ -72,6 +72,12 @@ Quando si cambiano diametro o tipo, le calibrazioni precedenti restano archiviat
 
 L'altezza strato e il primo strato vengono adattati automaticamente in un processo INDX separato in base agli ugelli **usati nel piatto corrente**, includendo parti dipinte, assegnazioni per altezza, riempimento e supporti. La mappatura filamento/tool viene risolta prima del calcolo. Un ugello montato ma inutilizzato non limita la stampa. Il limite comune e il minore dei limiti dei tool usati (70% del diametro): se usi 0,20 e 0,80 mm, il layer base non supera 0,14 mm; usando solo 0,80 mm, il limite e 0,56 mm. Il limite e un massimo: non aumenta automaticamente una richiesta piu fine. Modificare il modello, i tool o gli ugelli ricalcola il limite e ripristina le altezze richieste quando possibile, se non cambiate manualmente. Il riempimento combinato somma le altezze dei layer base entro il limite del proprio tool, mantenendo le quote Z coordinate per tutta la stampa. Salvare e rielaborare lo slicing dopo i cambi.
 
+## Prova di slicing verificata
+
+Disponibili [rapporto e riproduzione della prova 0,20/0,80 mm](PROVA_MULTIDIAMETRO.md), con [progetto 3MF, G-code e verificatore](prova-multidiametro.zip). Pareti da 0,14 mm e 18 gruppi di infill da 0,56 mm, verificati nell'anteprima e nel volume estruso. Accelerazioni dei profili di prova corrette a 3.000 mm/s2. Si tratta di un test software: nessuna stampa fisica eseguita.
+
+![Anteprima del layer 45 a Z 6,30 mm](anteprima-multidiametro.png)
+
 ## Riferimenti
 
 - [Sorgente e documentazione OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer)
