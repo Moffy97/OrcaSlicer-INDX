@@ -74,10 +74,14 @@ La pagina Auto slicing optimization conserva nella stessa tabella tempo stimato,
 Aprire **Auto slicing optimization** avvia automaticamente tre slicing nativi in sequenza; **Ricalcola confronto** permette di ripeterli, terminando con la modalita inizialmente selezionata. Anche il normale cambio di modalita aggiorna la relativa riga. Il confronto viene conservato durante la sessione del pannello; chiudendo il pannello occorre ricalcolarlo. Una modifica a piatto, modello, montaggio, filamento o parametri invalida i risultati. I tempi sono stime del motore Orca e il consumo comprende cio che Orca conteggia nel piatto, inclusa la torre se presente.
 
 
-## Materiale alternativo per il riempimento
+## Materiale alternativo: proposta solo dopo il confronto dei tempi
 
-Le proposte tengono pareti e superfici nel materiale assegnato alle pareti esterne (primo slot se automatico). Se un altro materiale e associato a un ugello piu grande del migliore disponibile per il riempimento principale, compare una richiesta prima del confronto. La scelta iniziale mantiene il materiale delle pareti. Si puo scegliere esplicitamente un altro profilo per il solo riempimento sparso; i materiali marcati per supporti, senza tipo dichiarato e gli ugelli uguali o piu piccoli sono esclusi.
+Per ogni modalita Orca calcola prima il piatto con il materiale principale, poi con ciascuna alternativa su ugello maggiore. Pareti e superfici mantengono il materiale assegnato alle pareti esterne (primo slot se automatico). Solo il riempimento sparso cambia nelle prove. Sono esclusi materiali per supporti, tipo sconosciuto e ugelli uguali o piu piccoli del migliore infill principale.
 
-Il diametro indica un'opportunita, non un risparmio garantito. Confermare l'alternativa solo dopo aver verificato adesione fra materiali, temperature e piano per il pezzo: il software non certifica la compatibilita dal nome. La tabella mostra i tempi effettivamente stimati dal motore, compresi i cambi tool. La scelta viene riutilizzata per le tre modalita e azzerata quando cambiano gli input o si chiude il pannello. Annulla interrompe il confronto. Supporti, pittura e assegnazioni locali conservano le regole precedenti.
+La richiesta compare solo se almeno un'alternativa ha un tempo totale inferiore alla precisione visualizzata (un secondo). Fra piu alternative viene proposta quella piu rapida. La richiesta mostra profilo/tool/diametro, tempo e cambi tool con e senza alternativa, risparmio in minuti/secondi e percentuale, e variazione firmata dei cambi tool. Sono stime native Orca dell'intero piatto, inclusi torre e cambi conteggiati dal motore, non una semplice proporzione fra diametri.
 
-![Richiesta su progetto sintetico di collaudo](indx-materiale-alternativo-richiesta.png)
+**Si** applica l'alternativa al solo infill; **No**, selezionato inizialmente, ripristina la variante principale. La versione scelta viene rislicerata prima di aggiornare la tabella. Alternative piu lente o equivalenti non generano richieste. Una prova fallita non giustifica una proposta e ripristina la base. Le scelte sono per modalita: un materiale puo convenire in Dettaglio e non in Veloce. Cambiare input invalida le misure; il confronto puo richiedere piu slicing della precedente versione. Durante le prove la modifica del progetto e la chiusura del pannello attendono il completamento, per non lasciare attiva una variante temporanea.
+
+Il vantaggio temporale non certifica compatibilita fisica: confermare solo dopo aver verificato adesione, temperature e piano per la coppia di materiali. Supporti, pittura e assegnazioni locali conservano le regole precedenti. Nessuna prova software avvia la stampante.
+
+![Risparmio e cambi tool nel fixture simulato](indx-materiale-risparmio-cambi.png)

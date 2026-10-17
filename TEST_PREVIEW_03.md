@@ -92,14 +92,21 @@ Verifica invalidazione: cambiando temporaneamente il layer da 0,20 a 0,18 mm, tu
 ![Confronto delle tre modalita](indx-confronto-modalita.png)
 
 
-## Confronto automatico e materiale alternativo
+## Confronto automatico e risparmio del materiale alternativo
 
-Build Windows Release completata. Test C++: 308 asserzioni in 13 casi IndxChecks; matrice di 60 slicing nativi con 967 asserzioni; regressioni CombinedInfill/UsedLayerTools/GCodeWriter: 467 asserzioni in 38 casi. Verificati ugelli alternativi maggiori, esclusione supporti/materiali sconosciuti e piccoli, conservazione delle proposte omogenee e mancato uso automatico di un materiale diverso.
+Build Windows Release. Test C++ IndxChecks: 348 asserzioni in 14 casi, incluso risparmio positivo/equivalente/negativo, precisione del secondo mostrato e tempi non validi. Matrice nativa di 60 slicing e regressioni CombinedInfill/UsedLayerTools/GCodeWriter: 1434 asserzioni in 39 casi. Clang-tidy non disponibile nella toolchain portatile priva di una installazione Visual Studio registrata.
 
-Prova UI isolata, nessuna connessione alla stampante: ingresso in Auto slicing optimization apre la richiesta senza premere Confronta. Mantenendo PLA, completate tutte le righe: Dettaglio 1h54m19s /39,1g/242 cambi; Equilibrato 1h46m16s /43,5g/242; Veloce 1h8m40s /32,1g/0. Infill PLA massimo 0,6.
+UI isolata senza connessione alla stampante: fixture con PLA su 0,6/0,4/0,6 e un profilo TEST SIMULATO PLA-CF su 0,8. Non attesta compatibilita o prestazioni fisiche. Portate e geometria servono solo a esercitare il software.
 
-Accettando il profilo TEST SIMULATO PLA-CF sullo 0,8, solo il riempimento sparso passa a T3; pareti e superfici restano PLA. Tre risultati completati senza ripetere la domanda: Dettaglio 1h58m2s /41,4g/242; Equilibrato e Veloce 1h49m33s /45,5g/242. Questo fixture non dimostra compatibilita fisica PLA/PLA-CF e mostra che un ugello maggiore puo anche peggiorare il tempo. Nessun invio, movimento, riscaldamento o flash.
+1. Portate tutte 8 mm3/s: le alternative piu lente non producono alcuna domanda. Tre modalita completate e infill principale ripristinato: Dettaglio 1h54m19s /39,1g/242 cambi; Equilibrato 1h46m16s /43,5g/242; Veloce 1h8m40s /32,1g/0.
+2. Portate simulate 1/1/1/30 mm3/s: Dettaglio passa da 8h49m51s a 4h49m37s, risparmio 240m14s, cambi 242 ->242. Accettato, infill T3/0,8 con pareti e superfici T1/0,4.
+3. Nello stesso confronto Veloce passa da 7h16m28s a 5h52m0s, risparmio 84m28s (19,4%), cambi 0 ->242. Rifiutato: la riga finale torna a 7h16m28s e zero cambi.
+4. Equilibrato accettato: 5h52m11s, infill T3 e pareti/superfici T0/0,6. La tabella distingue le tre varianti effettivamente accettate, non gli ultimi tentativi temporanei.
 
-![Esito del fixture con materiale alternativo](indx-materiale-alternativo-risultato.png)
+![Nessuna proposta quando non conviene](indx-alternativa-senza-risparmio.png)
+![Risparmio misurato e variazione dei cambi](indx-materiale-risparmio-cambi.png)
+![Risultati dopo accettazione e rifiuto](indx-materiale-alternativo-risultato.png)
 
-Verifica anche nella versione installata con quattro slot PLA: apertura della pagina avvia e completa automaticamente il confronto senza richiesta di materiale. Risultati confermati: 1h58m2s /41,4g/242; 1h49m33s /45,5g/242; 1h11m33s /38,0g/0. DLL installata uguale alla build verificata (SHA-256 87870f1152e91edf686b44ec57112130bcc2643d05ffc082c13e78e735b027fa).
+Nessun invio, movimento, riscaldamento o flash. Gli aumenti di portata del fixture non sono profili da utilizzare sulla stampante reale.
+
+Verifica finale del pacchetto e installazione/rollback temporanei superata. Corretto anche un conflitto fra nomi backup su orologi a bassa risoluzione: le directory ora vengono create in modo univoco e atomico. Il test forza sette salvataggi con lo stesso timestamp. Nessun aggiornamento della stampante eseguito in questa verifica.
