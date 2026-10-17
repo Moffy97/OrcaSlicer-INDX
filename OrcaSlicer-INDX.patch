@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..80fd2ae4
+index 00000000..afbbfd04
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,41 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -63,6 +63,10 @@ index 00000000..80fd2ae4
 +KlipperScreen owns the machine editor. Incomplete coordinates may be saved as a draft. Applying requires a fresh idle snapshot, heaters off, complete bounded geometry and an unchanged file fingerprint. Only the INDX user configuration is edited; core tool-change macros are preserved. The editor generates missing Tn shortcuts and a revision-guarded delayed SAVE_VARIABLE block for offsets. That block runs once for a new revision, preserving later official calibration results. Every geometry save backs up files and invalidates previous commissioning. A maintenance installation can use an explicitly registered inactive reference profile for limits; it does not activate that profile.
 +
 +Explicit operator attestations in the machine editor can persist and enable measured docks for controlled tests, then geometry/cleaning for printing after the first six ordered physical checklist steps. They require the loaded revision, matching runtime geometry and an active INDX head/load-cell configuration. Installs, automatic synchronization and the checklist itself never enable these gates. Pickup and park remain existing vendor macro calls with the standard movement confirmation.
++
++La proposta tool usa i preset correnti e la mappatura del piatto corrente, senza dipendere dalla fotografia Print del processo in background. Dettaglio richiede pareti con ugello fino a 0,4 mm e seleziona quello piu fine associato. Per Dettaglio ed Equilibrato un ugello montato piu fine ma senza filamento associato blocca la proposta: non viene sostituito silenziosamente con uno piu grande. I filamenti caricati e il materiale devono essere dichiarati, non dedotti dal solo montaggio.
++
++Se esiste almeno uno slot per ogni tool e tutti gli slot hanno tipo materiale e colore identici, la proposta completa automaticamente una mappatura predefinita vuota, tutta sul primo tool o gestita da una modalita automatica Orca con la corrispondenza slot/tool. La mappatura esplicita non predefinita viene preservata. Il cambio si applica al progetto e al piatto soltanto insieme alla proposta, dopo snapshot; non dichiara caricamenti fisici o calibrazioni. Tutti i tool diventano candidati, senza imporre l'uso ridondante di ugelli equivalenti.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -140,10 +144,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..1921cb1a
+index 00000000..a3b7cc14
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,155 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include <cmath>
@@ -188,13 +192,34 @@ index 00000000..1921cb1a
 +    return 0;
 +}
 +
-+inline Json propose_roles(Json candidates,const std::string& style) {
++// Orca's default map may point every slot at tool zero. With one identical
++// material/color slot per mounted tool, expose the complete tool set to proposals.
++inline std::vector<int> proposal_mapping(const Json& slots,size_t count,std::vector<int> maps,bool automatic=false) {
++    if(slots.size()<count || count==0)return maps;
++    const auto material=slots.front().value("material",std::string());
++    const auto color=slots.front().value("color",std::string());
++    if(material.empty() || color.empty())return maps;
++    for(const auto& slot:slots)
++        if(slot.value("material",std::string())!=material || slot.value("color",std::string())!=color)return maps;
++    if(!automatic && !maps.empty() && !std::all_of(maps.begin(),maps.end(),[](int tool){return tool==1;}))return maps;
++    maps.resize(slots.size(),1);
++    for(size_t t=0;t<count;++t)maps[t]=int(t)+1;
++    return maps;
++}
++
++inline Json propose_roles(Json candidates,const std::string& style,const Json& mounted=Json::array()) {
 +    if(candidates.empty())throw std::invalid_argument("no_candidates");
 +    if(style!="detail" && style!="balanced" && style!="speed")throw std::invalid_argument("invalid_style");
 +    const auto material=candidates.front().value("material",std::string());
 +    for(const auto& c:candidates)if(material.empty() || c.value("material",std::string())!=material)throw std::invalid_argument("mixed_materials");
 +    std::stable_sort(candidates.begin(),candidates.end(),[](const Json& a,const Json& b){return a.at("diameter").template get<double>()<b.at("diameter").template get<double>();});
 +    auto wall=candidates.front();
++    if(style=="detail" && wall.at("diameter").get<double>()>.4001)
++        throw std::invalid_argument("detail_no_fine_filament");
++    // A missing filament assignment must not silently hide a finer mounted nozzle.
++    if(style!="speed")for(const auto& tool:mounted)
++        if(tool.at("diameter").get<double>()+.0001<wall.at("diameter").get<double>())
++            throw std::invalid_argument("fine_tool_unassigned");
 +    if(style=="speed")for(const auto& c:candidates)if(c.at("diameter").get<double>()<=.4001)wall=c;
 +    const auto infill=style=="detail"?wall:candidates.back();
 +    return {{"wall",wall},{"solid",wall},{"infill",infill}};
@@ -422,10 +447,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..7511555a
+index 00000000..ab9be797
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,949 @@
+@@ -0,0 +1,974 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -861,7 +886,7 @@ index 00000000..7511555a
 +            match=match && std::abs(number(bed_key.c_str(),0)-record.value("bed",0))<.1;
 +        }
 +        match=match && (cal.contains("pa")?(pa_on && std::abs(number("pressure_advance",-1)-cal.at("pa").get<double>())<.00001):!pa_on);
-+        const auto* colors=config.option<ConfigOptionStrings>("filament_colour");
++        const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
 +        match=match && colors && colors->get_at(filament)==record.value("color",std::string());
 +        slots.push_back({{"tool",tool},{"filament",filament},{"diameter",nozzle.at("diameter")},{"type",nozzle.at("type")},
 +            {"library_id",uuid},{"name",record.value("name",bundle.filament_presets[filament])},{"calibrations",states},{"values_match",match}});
@@ -996,18 +1021,35 @@ index 00000000..7511555a
 +void suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
 +    if(!is_indx_printer())return;
 +    try {
-+        wxArrayString labels;labels.Add(_L("Dettaglio: ugello piu fine per tutte le funzioni"));labels.Add(_L("Equilibrato: pareti fini, infill con ugello maggiore"));labels.Add(_L("Veloce: pareti fino a 0,4 mm, infill con ugello maggiore"));
++        wxArrayString labels;labels.Add(_L("Dettaglio: ugello piu fine, massimo 0,4 mm per le pareti"));labels.Add(_L("Equilibrato: pareti fini, infill con ugello maggiore"));labels.Add(_L("Veloce: pareti fino a 0,4 mm, infill con ugello maggiore"));
 +        wxSingleChoiceDialog choice(parent,_L("La proposta riguarda pareti, superfici e infill. Supporti e pittura mantengono le assegnazioni esistenti. Tempi e cambi effettivi sono disponibili dopo lo slicing."),_L("Proposta tool INDX"),labels);
 +        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return;style=choice.GetSelection();}
-+        auto& bundle=*wxGetApp().preset_bundle;const auto& config=print.config();Json candidates=Json::array();
++        auto& bundle=*wxGetApp().preset_bundle;
++        // Read current presets and the current plate map, not a stale background Print.
++        const auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();
++        PrintConfig config;config.apply(bundle.full_config(false,plate?std::optional<std::vector<int>>(plate->get_filament_maps()):std::nullopt),true);
++        const auto mounted=nozzle_setup();
++        Json candidates=Json::array(),slots=Json::array();
 +        const auto* materials=config.option<ConfigOptionStrings>("filament_type");
++        const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
++        for(size_t f=0;f<bundle.filament_presets.size();++f)
++            slots.push_back({{"material",materials?materials->get_at(f):std::string()},{"color",colors?colors->get_at(f):std::string()}});
++        const auto proposal_maps=Indx::proposal_mapping(slots,tool_count(),config.filament_map.values,
++            plate && is_auto_filament_map_mode(plate->get_real_filament_map_mode(bundle.project_config)));
++        const bool remap=proposal_maps!=config.filament_map.values;
++        config.filament_map.values=proposal_maps;
 +        for(size_t f=0;f<bundle.filament_presets.size();++f) {
 +            const size_t tool=get_extruder_index(config,unsigned(f));if(tool>=tool_count())continue;
-+            candidates.push_back({{"filament",f+1},{"tool",tool},{"diameter",config.nozzle_diameter.get_at(tool)},{"material",materials?materials->get_at(f):std::string()}});
++            candidates.push_back({{"filament",f+1},{"tool",tool},{"diameter",mounted.at(tool).at("diameter")},{"material",materials?materials->get_at(f):std::string()}});
 +        }
++        BOOST_LOG_TRIVIAL(info)<<"INDX proposal inputs: "<<slots.dump()<<" maps "<<Json(config.filament_map.values).dump()<<" candidates "<<candidates.dump();
 +        Json roles;
-+        try {roles=Indx::propose_roles(candidates,style==0?"detail":style==1?"balanced":"speed");}
-+        catch(const std::invalid_argument&){throw std::runtime_error(_u8L("La proposta automatica richiede filamenti dello stesso materiale e mappature valide. Con materiali diversi assegna le funzioni manualmente."));}
++        try {roles=Indx::propose_roles(candidates,style==0?"detail":style==1?"balanced":"speed",mounted);}
++        catch(const std::invalid_argument& e){
++            if(std::string(e.what())=="detail_no_fine_filament" || std::string(e.what())=="fine_tool_unassigned")
++                throw std::runtime_error(_u8L("Manca un filamento associato all'ugello fine. Per Dettaglio le pareti richiedono 0,4 mm o meno: sincronizza i filamenti e associa il materiale al tool corretto. Un ugello da 0,6 mm non viene proposto al suo posto. Se e montato uno 0,2 mm, associa anche quel tool per usarlo."));
++            throw std::runtime_error(_u8L("La proposta automatica richiede filamenti dello stesso materiale e mappature valide. Con materiali diversi assegna le funzioni manualmente."));
++        }
 +        const char* fields[]={"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"};
 +        for(const auto* object:wxGetApp().plater()->model().objects) {
 +            for(const auto* field:fields) {
@@ -1017,6 +1059,7 @@ index 00000000..7511555a
 +            }
 +        }
 +        wxString summary;
++        if(remap)summary+=_L("Filamenti dello stesso tipo e colore: associazione automatica ai tool montati.\n");
 +        const wxString role_labels[]={_L("Pareti"),_L("Superfici"),_L("Riempimento")};int index=0;
 +        for(const std::string role:{"wall","solid","infill"}) {
 +            const auto& r=roles.at(role);
@@ -1031,7 +1074,14 @@ index 00000000..7511555a
 +        process.config.set_key_value("infill_combination",new ConfigOptionBool(true));
 +        const auto name="INDX proposta - "+digest(process.name+roles.dump()).substr(0,12);
 +        if(bundle.prints.find_preset(name,false))throw std::runtime_error(_u8L("Questa proposta esiste gia: seleziona il processo salvato dall'elenco."));
-+        wxGetApp().plater()->take_snapshot("Proposta tool INDX");bundle.prints.save_current_preset(name,false,false,&process);
++        wxGetApp().plater()->take_snapshot("Proposta tool INDX");
++        if(remap) {
++            bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(proposal_maps));
++            bundle.project_config.set_deserialize_strict("filament_map_mode","Manual");
++            auto* current=wxGetApp().plater()->get_partplate_list().get_curr_plate();
++            if(current){current->set_filament_maps(proposal_maps);current->set_filament_map_mode(fmmManual);}
++        }
++        bundle.prints.save_current_preset(name,false,false,&process);
 +        wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);wxGetApp().load_current_presets(false,false);
 +        if(output)output->SetValue(summary+"\n"+_L("Processo separato creato. Salva il progetto e rislicera."));
 +    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Proposta tool INDX"),wxOK|wxICON_INFORMATION,parent);}
@@ -1667,10 +1717,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..9066c756
+index 00000000..fbb2568d
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,150 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -1786,6 +1836,40 @@ index 00000000..9066c756
 +        project["slots"][0]["calibrations"]["pa"]["state"]="missing";
 +        auto report=preflight(project,remote);CHECK_FALSE(report["blocked"].get<bool>());CHECK_FALSE(report["issues"].empty());
 +    }
++}
++
++
++TEST_CASE("Detail proposals never substitute a coarse nozzle for an unavailable fine tool", "[IndxChecks]") {
++    const auto candidate=[](int filament,int tool,double d){return Json{{"filament",filament},{"tool",tool},{"diameter",d},{"material","PLA"}};};
++    const Json mounted=Json::array({{{"tool",0},{"diameter",.6}},{{"tool",1},{"diameter",.4}},{{"tool",2},{"diameter",.8}}});
++    const Json mapped=Json::array({candidate(1,0,.6),candidate(2,1,.4),candidate(3,2,.8)});
++    for(const std::string style:{"detail","balanced"}) {
++        CHECK(propose_roles(mapped,style,mounted)["wall"]["tool"]==1);
++        CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),style,mounted),std::invalid_argument);
++    }
++    CHECK(propose_roles(mapped,"detail",mounted)["solid"]["tool"]==1);
++    CHECK(propose_roles(mapped,"detail",mounted)["infill"]["tool"]==1);
++    CHECK(propose_roles(mapped,"balanced",mounted)["infill"]["tool"]==2);
++    CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),"detail"),std::invalid_argument);
++    auto finer=mounted;finer.push_back({{"tool",3},{"diameter",.2}});
++    CHECK_THROWS_AS(propose_roles(mapped,"detail",finer),std::invalid_argument);
++    auto all=mapped;all.push_back(candidate(4,3,.2));
++    CHECK(propose_roles(all,"detail",finer)["wall"]["tool"]==3);
++}
++
++
++TEST_CASE("Identical filament slots expose all mounted tools from the default map", "[IndxChecks]") {
++    Json slots=Json::array();for(int t=0;t<4;++t)slots.push_back({{"material","PLA"},{"color","#00FF00"}});
++    const std::vector<int> identity={1,2,3,4},defaults={1,1,1,1},custom={2,1,3,4};
++    CHECK(proposal_mapping(slots,4,{})==identity);
++    CHECK(proposal_mapping(slots,4,defaults)==identity);
++    CHECK(proposal_mapping(slots,4,custom)==custom);
++    CHECK(proposal_mapping(slots,4,{1,1,1,4},true)==identity);
++    CHECK(proposal_mapping(slots,4,custom,true)==identity);
++    slots[3]["color"]="#FFFFFF";CHECK(proposal_mapping(slots,4,defaults)==defaults);
++    slots[3]["color"]="#00FF00";slots[3]["material"]="PETG";
++    CHECK(proposal_mapping(slots,4,defaults)==defaults);
++    slots.erase(slots.end()-1);CHECK(proposal_mapping(slots,4,defaults)==defaults);
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

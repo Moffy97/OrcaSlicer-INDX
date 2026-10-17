@@ -42,3 +42,12 @@ In **Controlli**, i selettori **Dettaglio, Equilibrato, Veloce** applicano una p
 `indx-machine-backup-*` conserva i file geometrici precedenti; `indx-profile-backups` conserva profili e dati; `indx-screen-backup-*` conserva software e menu. Il rollback software dell'installatore mantiene i dati filamento/calibrazione attuali. Non ripristina automaticamente una vecchia geometria o un collaudo fisico.
 
 Guida completa illustrata: [Guida_completa_INDX_Orca_KlipperScreen.pdf](Guida_completa_INDX_Orca_KlipperScreen.pdf). Risultati: [TEST_PREVIEW_03.md](TEST_PREVIEW_03.md). I limiti e le quote non vengono misurati automaticamente.
+
+
+## Ottimizzazione automatica: filamenti identici e pareti fini
+
+La proposta legge i preset e la mappatura attuali del piatto. Se sono presenti almeno tanti filamenti quanti i tool, tutti dello stesso tipo e colore, una mappatura predefinita vuota, tutta sul primo tool o gestita da una modalita automatica Orca viene completata automaticamente: filamento 1 su T0, filamento 2 su T1 e cosi via. Una mappatura personalizzata non predefinita viene preservata.
+
+Dettaglio sceglie l'ugello piu fine e richiede pareti da 0,4 mm o meno. Con T0=0,6, T1=0,4, T2=0,6 e T3=0,8, propone T1 per pareti e superfici. Equilibrato mantiene pareti fini e sceglie il maggiore per infill. Uno 0,2 associato prevale sullo 0,4 per Dettaglio. Tutti i tool diventano disponibili alla scelta; non viene imposto di usare ugelli equivalenti, aggiungendo cambi inutili.
+
+Se manca il filamento per un ugello fine montato, la proposta lo segnala anziche sostituirlo con uno 0,6 e chiamarlo Dettaglio. Materiali/colori diversi non vengono rimappati automaticamente. Il software non dichiara carichi fisici o calibrazioni per effetto della proposta. Salva il progetto e rislicera.

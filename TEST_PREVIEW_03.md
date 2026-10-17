@@ -24,3 +24,16 @@ Le schermate Orca usano dati TEST SIMULATO in una directory separata dai profili
 
 
 ![KlipperScreen: pulsanti diretti e geometria con quote simulate](klipperscreen-tools-03.png)
+
+
+## Correzione delle proposte con filamenti identici
+
+Build Windows Release riuscita. Suite IndxChecks: 213 asserzioni in 8 casi, ordine casuale. Copertura: mappatura vuota/tutta su T0 di quattro PLA dello stesso colore completata in 1/2/3/4; mappature personalizzate preservate; colori o tipi diversi non rimappati; meno filamenti dei tool non completati. Dettaglio con 0,6/0,4/0,6/0,8 sceglie il tool da 0,4; uno 0,2 associato prevale; tool fine senza filamento e assenza di ugelli fino a 0,4 respinti per Dettaglio.
+
+La prova include anche una mappatura automatica intermedia 1/1/1/4: viene completata in 1/2/3/4 quando i quattro slot hanno tipo e colore identici. La lettura usa i diametri fisici delle schede tool e il colore del progetto, senza confonderli con la composizione delle varianti interne Orca.
+
+Prova GUI sul progetto con quattro slot PLA dello stesso colore e ugelli 0,6/0,4/0,6/0,8: Dettaglio seleziona filamento 2, T1, 0,40 mm. Nel 3MF salvato la mappatura e 1/2/3/4 e le pareti esterne/interne e le superfici superiori sono assegnate al filamento 2. Nessuna stampa fisica eseguita.
+
+![Proposta Dettaglio corretta](ottimizzazione-dettaglio-04.png)
+
+Elaborazione del progetto completata anche nell'anteprima Orca dopo l'applicazione della proposta; nessun invio alla stampante.
