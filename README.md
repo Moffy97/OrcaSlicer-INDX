@@ -122,3 +122,9 @@ Disponibili [rapporto e riproduzione della prova 0,20/0,80 mm](PROVA_MULTIDIAMET
 - [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen)
 
 Lo studio CHT riguarda un hardware specifico: non e una misura di questa conversione. I valori calibrati del proprio filamento e ugello hanno priorita.
+
+## Mappatura diretta e anteprima selezionata
+
+In Filamenti scegli **Automatico / Manuale** e leggi o modifica il tool sotto ogni slot. Corretto il falso tool mancante quando il principale e il filamento 2: [uso e verifica](PROVA_MAPPATURA_TOOL.md). La sezione del modello mostra solo il risultato selezionato, con quota, altezza layer e larghezza linea reali. [Guida completa aggiornata](Guida_completa_INDX_Orca_KlipperScreen.pdf).
+
+La personalizzazione web Mainsail e disponibile in [mainsail-indx.zip](mainsail-indx.zip): tema e panoramica locale in sola lettura. Nessuna installazione di Fluidd.

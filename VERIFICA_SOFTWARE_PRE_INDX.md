@@ -42,3 +42,7 @@ Il commissioning resta manuale e progressivo. Le calibrazioni PA, flow e portata
 
 
 ![Confronto ABS con ugello fine non disponibile](audit-abs-modalita-disponibili.png)
+
+## Aggiornamento: mappatura principale e tool
+
+[Rapporto mappatura](PROVA_MAPPATURA_TOOL.md): 65 casi e 1973 asserzioni superati, verifica nativa della scelta manuale e del confronto con il secondo filamento PLA da 0,4 mm. Le prove fisiche restano da eseguire dopo il montaggio.

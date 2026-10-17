@@ -130,3 +130,7 @@ La conferma dei dock e quella del collaudo sono azioni manuali distinte: verific
 ## Materiali per ruolo e fonti
 
 Conserva la distinzione fra adesione nel modello e rilascio dei supporti. La matrice versionata e datata deriva da fonti ufficiali; non inventare compatibilita per blend, CF/GF o gradi non documentati. PLA/PETG sono interfacce reciproche, non alternative per infill. PETG/TPU e PLA/TPU sono coppie condizionali: mostra effetto sulla flessibilita e richiedi la scelta finale dopo il confronto dei tempi. Tratta PVA/BVOH in modo direzionale. Mantieni HIPS con ABS/ASA condizionale per le indicazioni discordanti e l’effetto del limonene. Usa gli slot realmente usati e il loro ruolo: un normale PETG selezionato per l’interfaccia non diventa strutturale, un filamento con flag supporto assegnato a una parete non puo aggirare la verifica. Non nascondere avvisi termici/geometrici o condizioni non verificate. Usa per l’interfaccia modifica solo il processo del progetto con anteprima delle scelte e protezione degli override locali.
+
+## Conservare la mappatura esplicita
+
+Mantieni i pulsanti Automatico e Manuale nella pagina principale Filamenti e i selettori Tool nello stesso pannello. In Manuale non sostituire la mappa del progetto durante le proposte Auto slice. In Automatico ricostruisci la mappa posizionale quando e univoca. Testa il principale nel secondo slot da 0,4 mm con il primo slot di colore o materiale diverso, senza indebolire le regole di compatibilita. Conserva il supporto a un numero variabile di tool.

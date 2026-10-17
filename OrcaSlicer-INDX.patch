@@ -187,10 +187,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..348de9af
+index 00000000..53d46c57
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,274 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include "IndxMaterials.hpp"
@@ -272,15 +272,23 @@ index 00000000..348de9af
 +    return 0;
 +}
 +
-+// Orca's default map may point every slot at tool zero. With one identical
-+// material/color slot per mounted tool, expose the complete tool set to proposals.
-+inline std::vector<int> proposal_mapping(const Json& slots,size_t count,std::vector<int> maps,bool automatic=false) {
++// Orca's default map may point every slot at tool zero. In a one-slot-per-tool
++// INDX project the mapping is positional, independently of material/color.
++// Compatibility is evaluated separately by material_proposal, after mapping.
++inline std::vector<int> proposal_mapping(const Json& slots,size_t count,std::vector<int> maps,bool automatic=false,bool explicit_mapping=false) {
++    if(explicit_mapping)return maps;
 +    if(slots.size()<count || count==0)return maps;
 +    const auto material=slots.front().value("material",std::string());
 +    const auto color=slots.front().value("color",std::string());
 +    if(material.empty() || color.empty())return maps;
-+    for(const auto& slot:slots)
-+        if(slot.value("material",std::string())!=material || slot.value("color",std::string())!=color)return maps;
++    bool identical=true;
++    for(const auto& slot:slots) {
++        if(slot.value("material",std::string()).empty() || slot.value("color",std::string()).empty())return maps;
++        if(slot.value("material",std::string())!=material || slot.value("color",std::string())!=color)identical=false;
++    }
++    // Extra slots of different materials/colors have no unambiguous positional
++    // tool assignment; leave their explicit/native mapping untouched.
++    if(!identical && slots.size()!=count)return maps;
 +    if(!automatic && !maps.empty() && !std::all_of(maps.begin(),maps.end(),[](int tool){return tool==1;}))return maps;
 +    maps.resize(slots.size(),1);
 +    for(size_t t=0;t<count;++t)maps[t]=int(t)+1;
@@ -510,6 +518,51 @@ index 00000000..f878baee
 +    return use=="same" || use=="conditional";
 +}
 +} } }
+diff --git a/src/libslic3r/IndxPreview.hpp b/src/libslic3r/IndxPreview.hpp
+new file mode 100644
+index 00000000..ef583efa
+--- /dev/null
++++ b/src/libslic3r/IndxPreview.hpp
+@@ -0,0 +1,39 @@
++#pragma once
++#include "GCode/GCodeProcessor.hpp"
++#include "ExtrusionEntity.hpp"
++#include <algorithm>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <limits>
++#include <map>
++#include <utility>
++#include <vector>
++
++namespace Slic3r::Indx {
++struct PreviewSegment { float x0,y0,x1,y1,width,height; bool infill; };
++struct PreviewLayer { float z; std::vector<PreviewSegment> segments; };
++struct LayerPreview {
++    std::vector<PreviewLayer> layers;
++    float min_x=std::numeric_limits<float>::max(),min_y=min_x;
++    float max_x=-min_x,max_y=-min_x;
++    bool too_large=false;
++};
++// Own a bounded snapshot: background slicing may replace the native result.
++inline LayerPreview layer_preview(const GCodeProcessorResult& result,size_t limit=1500000) {
++    LayerPreview data;std::map<int64_t,PreviewLayer> layers;size_t count=0;
++    for(size_t i=1;i<result.moves.size();++i) {
++        const auto& m=result.moves[i];const auto& p=result.moves[i-1].position;
++        if(m.type!=EMoveType::Extrude || !(is_perimeter(m.extrusion_role) || is_infill(m.extrusion_role) || m.extrusion_role==erGapFill))continue;
++        const float z=m.print_z>0?m.print_z:m.position.z();
++        if(!p.allFinite() || !m.position.allFinite() || !std::isfinite(z) || z<=0 || !std::isfinite(m.width) || !std::isfinite(m.height) || m.width<=0 || m.height<=0)continue;
++        if(++count>limit){data=LayerPreview();data.too_large=true;return data;}
++        auto& layer=layers[int64_t(std::llround(double(z)*100000.))];layer.z=z;
++        layer.segments.push_back({p.x(),p.y(),m.position.x(),m.position.y(),m.width,m.height,is_infill(m.extrusion_role)});
++        data.min_x=std::min({data.min_x,p.x(),m.position.x()});data.max_x=std::max({data.max_x,p.x(),m.position.x()});
++        data.min_y=std::min({data.min_y,p.y(),m.position.y()});data.max_y=std::max({data.max_y,p.y(),m.position.y()});
++    }
++    for(auto& item:layers)data.layers.push_back(std::move(item.second));
++    return data;
++}
++}
 diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
 index 93a71dcd..602dc074 100644
 --- a/src/libslic3r/Print.cpp
@@ -711,10 +764,10 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..285a5b99
+index 00000000..ebd6bbea
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1573 @@
+@@ -0,0 +1,1740 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -728,6 +781,7 @@ index 00000000..285a5b99
 +#include "libslic3r/Print.hpp"
 +#include "libslic3r/Model.hpp"
 +#include "libslic3r/IndxChecks.hpp"
++#include "libslic3r/IndxPreview.hpp"
 +#include "libslic3r/Config.hpp"
 +#include "libslic3r/Color.hpp"
 +#include "libslic3r/Semver.hpp"
@@ -770,6 +824,9 @@ index 00000000..285a5b99
 +#include <wx/dcmemory.h>
 +#include <wx/bitmap.h>
 +#include <wx/brush.h>
++#include <wx/dcbuffer.h>
++#include <wx/slider.h>
++#include <wx/pen.h>
 +#include <numeric>
 +#include <zlib.h>
 +#include <chrono>
@@ -792,6 +849,61 @@ index 00000000..285a5b99
 +namespace Slic3r { namespace GUI {
 +namespace {
 +using Json = nlohmann::json;
++class IndxSectionPreview final : public wxPanel {
++    Indx::LayerPreview m_data;
++    wxPanel* m_canvas;
++    wxSlider* m_layer;
++    wxStaticText* m_caption;
++    wxString m_empty;
++    void describe() {
++        if(m_data.layers.empty())return;
++        const auto index=std::min(size_t(m_layer->GetValue()),m_data.layers.size()-1);
++        const auto& layer=m_data.layers[index];
++        float wmin=std::numeric_limits<float>::max(),wmax=0,hmin=wmin,hmax=0;
++        for(const auto& s:layer.segments){wmin=std::min(wmin,s.width);wmax=std::max(wmax,s.width);hmin=std::min(hmin,s.height);hmax=std::max(hmax,s.height);}
++        m_caption->SetLabel(wxString::Format(_L("Layer %zu/%zu | Z %.3f mm | Altezza %.3f–%.3f mm | Linea %.3f–%.3f mm"),index+1,m_data.layers.size(),layer.z,hmin,hmax,wmin,wmax));
++        m_canvas->Refresh();
++    }
++public:
++    explicit IndxSectionPreview(wxWindow* parent):wxPanel(parent) {
++        auto* box=new wxBoxSizer(wxVERTICAL);
++        m_canvas=new wxPanel(this,wxID_ANY,wxDefaultPosition,wxSize(-1,220));m_canvas->SetBackgroundStyle(wxBG_STYLE_PAINT);
++        box->Add(m_canvas,1,wxEXPAND);
++        m_caption=new wxStaticText(this,wxID_ANY,wxEmptyString);box->Add(m_caption,0,wxEXPAND|wxTOP,8);
++        m_layer=new wxSlider(this,wxID_ANY,0,0,1);m_layer->SetName(_L("Layer della sezione del profilo selezionato"));box->Add(m_layer,0,wxEXPAND|wxTOP,4);
++        box->Add(new wxStaticText(this,wxID_ANY,_L("Pareti: verde · Riempimenti e superfici: arancio · Larghezze in scala XY. Torre e supporti esclusi.")),0,wxEXPAND|wxTOP,4);
++        SetSizer(box);
++        m_layer->Bind(wxEVT_SLIDER,[this](wxCommandEvent&){describe();});
++        m_canvas->Bind(wxEVT_SIZE,[this](wxSizeEvent& event){m_canvas->Refresh();event.Skip();});
++        m_canvas->Bind(wxEVT_PAINT,[this](wxPaintEvent&){
++            wxAutoBufferedPaintDC dc(m_canvas);const bool dark=wxGetApp().dark_mode();
++            dc.SetBackground(wxBrush(dark?wxColour(20,31,39):wxColour(242,246,248)));dc.Clear();
++            const auto size=m_canvas->GetClientSize();
++            if(m_data.layers.empty()){dc.SetTextForeground(dark?wxColour(185,205,214):wxColour(60,80,90));dc.DrawLabel(m_empty,wxRect(16,16,std::max(1,size.x-32),std::max(1,size.y-32)),wxALIGN_CENTER);return;}
++            const auto& layer=m_data.layers[std::min(size_t(m_layer->GetValue()),m_data.layers.size()-1)];
++            const double dx=std::max(.1f,m_data.max_x-m_data.min_x),dy=std::max(.1f,m_data.max_y-m_data.min_y);
++            const double scale=std::max(.01,std::min(std::max(1,size.x-36)/dx,std::max(1,size.y-28)/dy));
++            const double ox=(size.x-dx*scale)/2,oy=(size.y-dy*scale)/2;
++            for(const auto& s:layer.segments){
++                dc.SetPen(wxPen(s.infill?wxColour(235,163,67):wxColour(56,198,169),std::max(1,int(std::lround(s.width*scale)))));
++                dc.DrawLine(int(ox+(s.x0-m_data.min_x)*scale),int(size.y-oy-(s.y0-m_data.min_y)*scale),int(ox+(s.x1-m_data.min_x)*scale),int(size.y-oy-(s.y1-m_data.min_y)*scale));
++            }
++        });
++        clear();
++    }
++    void clear() {
++        m_data=Indx::LayerPreview();m_empty=_L("La sezione reale comparira dopo lo slicing del profilo selezionato.");
++        m_layer->Disable();m_caption->SetLabel(_L("Nessuna anteprima valida del profilo selezionato."));m_canvas->Refresh();
++    }
++    void load(const GCodeProcessorResult& result) {
++        m_data=Indx::layer_preview(result);
++        if(m_data.layers.empty()){
++            m_empty=m_data.too_large?_L("Modello molto complesso: usa l'anteprima nativa per visualizzare tutte le linee."):_L("Nessun percorso del modello disponibile.");
++            m_caption->SetLabel(_L("Nessuna sezione disponibile."));m_layer->Disable();m_canvas->Refresh();return;
++        }
++        m_layer->SetRange(0,std::max(1,int(m_data.layers.size())-1));m_layer->SetValue(int(m_data.layers.size()/2));m_layer->Enable(m_data.layers.size()>1);describe();
++    }
++};
 +constexpr const char* catalog_file = "indx-orca-catalog.json.z";
 +bool foreground_sync = false;
 +bool auto_sync_conflict = false;
@@ -824,6 +936,40 @@ index 00000000..285a5b99
 +    std::ostringstream os;os.imbue(std::locale::classic());
 +    os<<tool<<":"<<std::fixed<<std::setprecision(3)<<nozzle.at("diameter").get<double>()<<":"<<nozzle.at("type").get<std::string>();
 +    return os.str();
++}
++bool manual_indx_mapping() {
++    const auto raw=wxGetApp().app_config->get("indx_manual_mapping_printers");
++    try{return !raw.empty() && Json::parse(raw).value(wxGetApp().preset_bundle->printers.get_edited_preset().name,false);}catch(const std::exception&){return false;}
++}
++void set_manual_indx_mapping(bool manual) {
++    const auto raw=wxGetApp().app_config->get("indx_manual_mapping_printers");Json saved=Json::object();
++    try{if(!raw.empty())saved=Json::parse(raw);}catch(const std::exception&){}
++    saved[wxGetApp().preset_bundle->printers.get_edited_preset().name]=manual;
++    wxGetApp().app_config->set("indx_manual_mapping_printers",saved.dump());
++}
++std::vector<int> sidebar_indx_mapping(bool positional) {
++    auto& bundle=*wxGetApp().preset_bundle;auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();
++    auto maps=plate?plate->get_filament_maps():std::vector<int>();
++    if(maps.empty())maps=bundle.project_config.option<ConfigOptionInts>("filament_map")->values;
++    if(positional){
++        Json slots=Json::array();const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
++        for(size_t f=0;f<bundle.filament_presets.size();++f){
++            const auto* preset=bundle.filaments.find_preset(bundle.filament_presets[f],false);
++            const auto* type=preset?preset->config.option<ConfigOptionStrings>("filament_type"):nullptr;
++            slots.push_back({{"material",type?type->get_at(0):std::string()},{"color",colors?colors->get_at(f):std::string()}});
++        }
++        maps=Indx::proposal_mapping(slots,tool_count(),maps,true);
++    }
++    maps.resize(bundle.filament_presets.size(),1);return maps;
++}
++void apply_sidebar_indx_mapping(const std::vector<int>& maps) {
++    auto& bundle=*wxGetApp().preset_bundle;auto* p=wxGetApp().plater();
++    p->take_snapshot("Mappatura tool INDX");
++    bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(maps));
++    bundle.project_config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    auto* plate=p->get_partplate_list().get_curr_plate();
++    if(plate){plate->set_filament_map_mode(fmmManual);plate->set_filament_maps(maps);}
++    p->on_config_change(bundle.project_config);p->update();
 +}
 +std::string digest(const std::string& s) {
 +    boost::uuids::detail::sha1 hash; hash.process_bytes(s.data(),s.size());
@@ -1402,6 +1548,44 @@ index 00000000..285a5b99
 +    return adapt_layer_heights(print);
 +}
 +bool is_indx_profile() {return is_indx_printer();}
++wxWindow* create_indx_mapping_controls(wxWindow* parent) {
++    auto* panel=new wxPanel(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
++    row->Add(new wxStaticText(panel,wxID_ANY,_L("Mappatura")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,8);
++    auto* automatic=new wxToggleButton(panel,wxID_ANY,_L("Automatico"));auto* manual=new wxToggleButton(panel,wxID_ANY,_L("Manuale"));
++    row->Add(automatic,1,wxRIGHT,5);row->Add(manual,1);panel->SetSizerAndFit(row);
++    automatic->SetToolTip(_L("Associa gli slot ai tool disponibili. Materiale e colore restano separati nella scelta dei ruoli."));
++    manual->SetToolTip(_L("Scegli il tool accanto a ogni filamento. Auto slice rispetta queste assegnazioni."));
++    automatic->Bind(wxEVT_TOGGLEBUTTON,[](wxCommandEvent&){if(!is_indx_profile())return;const auto maps=sidebar_indx_mapping(true);set_manual_indx_mapping(false);apply_sidebar_indx_mapping(maps);});
++    manual->Bind(wxEVT_TOGGLEBUTTON,[](wxCommandEvent&){if(!is_indx_profile())return;const auto maps=sidebar_indx_mapping(!manual_indx_mapping());set_manual_indx_mapping(true);apply_sidebar_indx_mapping(maps);});
++    panel->Bind(wxEVT_UPDATE_UI,[panel,automatic,manual](wxUpdateUIEvent&){
++        const bool visible=is_indx_profile();if(panel->IsShown()!=visible){panel->Show(visible);panel->GetParent()->Layout();}
++        const bool selected=manual_indx_mapping(),busy=wxGetApp().plater()->is_background_process_slicing();
++        automatic->SetValue(!selected);manual->SetValue(selected);automatic->Enable(!busy);manual->Enable(!busy);
++    });
++    wxGetApp().UpdateDarkUIWin(panel);return panel;
++}
++wxWindow* create_indx_tool_selector(wxWindow* parent,wxWindow* filament_control,int filament_index) {
++    auto* panel=new wxPanel(parent);auto* row=new wxBoxSizer(wxHORIZONTAL);
++    row->Add(new wxStaticText(panel,wxID_ANY,_L_CONTEXT("Tool","INDX tool assignment")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,6);
++    auto* choice=new wxChoice(panel,wxID_ANY,wxDefaultPosition,wxSize(132,-1));row->Add(choice,1);panel->SetSizerAndFit(row);
++    choice->SetName(wxString::Format(_L("Tool del filamento %d"),filament_index+1));
++    choice->SetToolTip(_L("T0 = prima testa, T1 = seconda testa. Il diametro proviene dalla configurazione INDX. Abilita Manuale per modificare."));
++    const wxWeakRef<wxWindow> weak=panel;
++    filament_control->Bind(wxEVT_DESTROY,[weak,filament_control](wxWindowDestroyEvent& event){if(event.GetEventObject()==filament_control && weak)weak->Destroy();event.Skip();});
++    auto signature=std::make_shared<std::string>();
++    panel->Bind(wxEVT_UPDATE_UI,[panel,choice,filament_index,signature](wxUpdateUIEvent&){
++        const bool visible=is_indx_profile();if(panel->IsShown()!=visible){panel->Show(visible);panel->GetParent()->Layout();}if(!visible)return;
++        const auto tools=nozzle_setup();const auto maps=sidebar_indx_mapping(!manual_indx_mapping());const auto key=tools.dump()+Json(maps).dump();
++        if(*signature!=key){*signature=key;choice->Clear();for(const auto& t:tools)choice->Append(wxString::Format(_L("T%d · %.2f mm"),t.at("tool").get<int>(),t.at("diameter").get<double>()));
++            choice->SetSelection(filament_index<int(maps.size()) && maps[filament_index]>0 && maps[filament_index]<=int(tools.size())?maps[filament_index]-1:wxNOT_FOUND);}
++        choice->Enable(manual_indx_mapping() && !wxGetApp().plater()->is_background_process_slicing());
++    });
++    choice->Bind(wxEVT_CHOICE,[choice,filament_index](wxCommandEvent&){
++        if(!manual_indx_mapping() || choice->GetSelection()<0)return;auto maps=sidebar_indx_mapping(false);
++        if(filament_index>=int(maps.size()))return;maps[filament_index]=choice->GetSelection()+1;apply_sidebar_indx_mapping(maps);
++    });
++    wxGetApp().UpdateDarkUIWin(panel);return panel;
++}
 +void refresh_indx_preflight(const Print& print) {
 +    if(!is_indx_printer())return;
 +    try {
@@ -1429,7 +1613,7 @@ index 00000000..285a5b99
 +        for(size_t f=0;f<bundle.filament_presets.size();++f)
 +            slots.push_back({{"material",materials?materials->get_at(f):std::string()},{"color",colors?colors->get_at(f):std::string()}});
 +        const auto proposal_maps=Indx::proposal_mapping(slots,tool_count(),config.filament_map.values,
-+            plate && is_auto_filament_map_mode(plate->get_real_filament_map_mode(bundle.project_config)));
++            !manual_indx_mapping(),manual_indx_mapping());
 +        const bool remap=proposal_maps!=config.filament_map.values;
 +        config.filament_map.values=proposal_maps;
 +        for(size_t f=0;f<bundle.filament_presets.size();++f) {
@@ -1469,7 +1653,7 @@ index 00000000..285a5b99
 +            }
 +        }
 +        wxString summary;
-+        if(remap)summary+=_L("Filamenti dello stesso tipo e colore: associazione automatica ai tool montati.\n");
++        if(remap)summary+=_L("Associazione dei filamenti ai tool: ogni slot corrisponde al suo tool. Materiale e colore determinano quali tool possono collaborare.\n");
 +        const wxString role_labels[]={_L("Pareti"),_L("Superfici"),_L("Riempimento")};int index=0;
 +        for(const std::string role:{"wall","solid","infill"}) {
 +            const auto& r=roles.at(role);
@@ -1859,19 +2043,23 @@ index 00000000..285a5b99
 +    auto* navigation=new wxBoxSizer(wxHORIZONTAL);
 +    auto tabs=std::make_shared<std::vector<wxToggleButton*>>();
 +    auto compare_on_open=std::make_shared<bool>(false);
++    auto* selected_summary=heading(dialog,wxEmptyString,13);selected_summary->Hide();
 +    for(const auto& label:{_L("Info INDX"),_L("Config tool"),_L("Auto slicing optimization")}) {
 +        const int index=int(tabs->size());
 +        auto* button=new wxToggleButton(dialog,wxID_ANY,label,wxDefaultPosition,wxSize(-1,48));
 +        tabs->push_back(button);navigation->Add(button,1,wxALL,4);
-+        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index,compare_on_open](wxCommandEvent&){
++        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index,compare_on_open,selected_summary,dialog](wxCommandEvent&){
 +            const bool entering=book->GetSelection()!=index;
 +            *compare_on_open=index==2 && entering;
-+            book->SetSelection(index);for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==size_t(index));
++            book->SetSelection(index);selected_summary->Show(index==2);dialog->Layout();for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==size_t(index));
 +        });
 +    }
 +    tabs->front()->SetValue(true);layout->Add(navigation,0,wxEXPAND|wxLEFT|wxRIGHT,16);
++    layout->Add(selected_summary,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,22);
 +    auto page=[&](const wxString& label){auto* panel=new wxPanel(book);book->AddPage(panel,label);return panel;};
-+    auto* info=page(_L("Info INDX"));auto* machine=page(_L("Config tool"));auto* optimization=page(_L("Auto slicing optimization"));
++    auto* info=page(_L("Info INDX"));auto* machine=page(_L("Config tool"));
++    auto* optimization=new wxScrolledWindow(book,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxVSCROLL);
++    optimization->SetScrollRate(0,12);optimization->SetMinSize(wxSize(0,0));book->AddPage(optimization,_L("Auto slicing optimization"));
 +    auto* info_layout=new wxBoxSizer(wxVERTICAL);
 +    info_layout->Add(heading(info,_L("Pronto per il multidiametro")),0,wxALL,20);
 +    auto* info_text=new wxStaticText(info,wxID_ANY,_L("Configura numero, diametri, tipo ugello, dock e offset da KlipperScreen. Orca riceve il montaggio senza doverlo inserire due volte.\n\nIn Auto slicing optimization scegli il risultato che vuoi ottenere: l'assegnazione dei tool, lo slicing e i risultati sono nella stessa pagina.\n\nFilamenti e calibrazioni restano disponibili nei loro comandi dedicati. La connessione usa la stampante gia selezionata in Orca."));
@@ -1941,6 +2129,13 @@ index 00000000..285a5b99
 +    const wxString labels[]={_L("Dettaglio"),_L("Equilibrato"),_L("Veloce")};
 +    const wxString descriptions[]={_L("Pareti e superfici: ugello fine, fino a 0,4 mm.\nRiempimento: ugello maggiore."),_L("Pareti e superfici: fino a 0,6 mm.\nRiempimento: ugello maggiore."),_L("Ugello maggiore per tutto:\npareti, superfici e riempimento.")};
 +    auto selection=std::make_shared<int>(1);
++    const auto current_process=wxGetApp().preset_bundle->prints.get_edited_preset().name;
++    if(current_process.find("INDX - Dettaglio (progetto)")==0)*selection=0;
++    else if(current_process.find("INDX - Veloce (progetto)")==0)*selection=2;
++    else if(current_process.find("INDX - Equilibrato (progetto)")!=0){
++        try{*selection=std::clamp(std::stoi(wxGetApp().app_config->get("indx_slice_style")),0,2);}catch(const std::exception&){}
++    }
++    auto requested=std::make_shared<int>(*selection);
 +    for(int i=0;i<3;++i){
 +        auto* card=new wxPanel(optimization);auto* card_layout=new wxBoxSizer(wxVERTICAL);
 +        auto* button=new wxToggleButton(card,wxID_ANY,labels[i],wxDefaultPosition,wxSize(-1,46));mode_buttons->push_back(button);
@@ -1948,7 +2143,7 @@ index 00000000..285a5b99
 +        auto* description=new wxStaticText(card,wxID_ANY,descriptions[i]);description->Wrap(260);card_layout->Add(description,1,wxEXPAND|wxALL,4);
 +        card->SetSizer(card_layout);modes->Add(card,1,wxEXPAND|wxALL,6);
 +    }
-+    (*mode_buttons)[1]->SetValue(true);opt_layout->Add(modes,0,wxEXPAND|wxLEFT|wxRIGHT,14);
++    opt_layout->Add(modes,0,wxEXPAND|wxLEFT|wxRIGHT,14);
 +    auto* actions=new wxBoxSizer(wxHORIZONTAL);
 +    auto* slice=new wxButton(optimization,wxID_ANY,_L("Ricalcola"),wxDefaultPosition,wxSize(220,46));
 +    actions->Add(slice,0,wxRIGHT,16);
@@ -1966,10 +2161,23 @@ index 00000000..285a5b99
 +        comparison->InsertColumn(comparison_column++,title,wxLIST_FORMAT_LEFT,180);
 +    opt_layout->Add(comparison,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* report=new wxTextCtrl(optimization,wxID_ANY,_L("Le assegnazioni e i risultati del piatto corrente compariranno qui.\nL'altezza layer considera solo i tool usati. Supporti e pittura mantengono le assegnazioni esistenti."),wxDefaultPosition,wxSize(-1,60),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
-+    opt_layout->Add(report,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);optimization->SetSizer(opt_layout);
++    opt_layout->Add(report,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    opt_layout->Add(heading(optimization,_L("Sezione del modello · solo profilo selezionato"),13),0,wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* section_preview=new IndxSectionPreview(optimization);opt_layout->Add(section_preview,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* native_preview=new wxButton(optimization,wxID_ANY,_L("Apri anteprima 3D del profilo selezionato"));
++    opt_layout->Add(native_preview,0,wxLEFT|wxRIGHT|wxBOTTOM,20);optimization->SetSizer(opt_layout);
 +    layout->Add(book,1,wxEXPAND|wxALL,8);dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1000,760));dialog->SetMinSize(wxSize(920,700));
 +    wxGetApp().UpdateDlgDarkUI(dialog);
-+    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
++    auto paint_selection=[mode_buttons,requested,labels,selected_summary](){
++        selected_summary->SetLabel(wxString::Format(_L("Modalita selezionata: %s"),labels[*requested]));
++        for(int i=0;i<3;++i){auto* button=(*mode_buttons)[i];const bool selected=i==*requested;
++            button->SetValue(selected);button->SetLabel(selected?wxString::Format(_L("%s · selezionata"),labels[i]):labels[i]);
++            auto font=button->GetFont();font.SetWeight(selected?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL);button->SetFont(font);
++            button->SetBackgroundColour(selected?wxColour(31,119,105):(wxGetApp().dark_mode()?wxColour(55,59,62):wxColour(235,238,240)));
++            button->SetForegroundColour(selected?wxColour(255,255,255):(wxGetApp().dark_mode()?wxColour(235,238,240):wxColour(35,40,45)));button->Refresh();
++        }
++    };paint_selection();
++    auto clear_metrics=[metrics,progress,section_preview](){section_preview->clear();metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
 +    struct SliceState {
 +        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;};
 +        bool pending=false;bool seen_running=false;bool displayed=false;bool skip_unavailable=false;
@@ -2025,13 +2233,14 @@ index 00000000..285a5b99
 +        }
 +        return digest(data.str());
 +    };
-+    auto draw_comparison=[comparison,state,labels](){
++    auto draw_comparison=[comparison,state,labels,requested](){
 +        comparison->Freeze();comparison->DeleteAllItems();
 +        double best_time=std::numeric_limits<double>::max(),best_weight=best_time;
 +        for(const auto& r:state->results)if(r.valid){best_time=std::min(best_time,r.seconds);best_weight=std::min(best_weight,r.grams);}
 +        for(int i=0;i<3;++i){
 +            const auto& r=state->results[i];const auto row=comparison->InsertItem(i,labels[i]);
 +            comparison->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
++            if(i==*requested){comparison->SetItemBackgroundColour(row,wxGetApp().dark_mode()?wxColour(28,77,70):wxColour(205,239,232));auto font=comparison->GetFont();font.SetWeight(wxFONTWEIGHT_BOLD);comparison->SetItemFont(row,font);}
 +            comparison->SetItem(row,1,r.valid?r.time:r.unavailable.empty()?_L("Da calcolare"):_L("Non disponibile"));
 +            comparison->SetItem(row,2,r.valid?wxString::Format("%.1f",r.grams):wxString("--"));
 +            comparison->SetItem(row,3,r.valid?wxString::Format("%d",r.changes):wxString("--"));
@@ -2121,36 +2330,42 @@ index 00000000..285a5b99
 +        p->reslice();
 +        state->context=context();
 +    };
-+    auto run_comparison=[selection,state,mode_buttons,run_slice,compare_on_open](){
++    auto run_comparison=[selection,requested,state,paint_selection,run_slice,compare_on_open](){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
 +        *compare_on_open=false;
 +        state->collecting=true;state->applying=false;state->skip_unavailable=false;
 +        for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);
-+        state->queue.clear();for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
-+        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
-+        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++        state->queue.clear();for(int i=0;i<3;++i)if(i!=*requested)state->queue.push_back(i);
++        state->queue.push_back(*requested);*selection=state->queue.front();state->queue.erase(state->queue.begin());
++        paint_selection();run_slice();
 +    };
 +    material_help->Bind(wxEVT_BUTTON,[dialog,primary_choice](wxCommandEvent&){show_material_supports(dialog,primary_choice->GetSelection()+1);});
 +    primary_choice->Bind(wxEVT_CHOICE,[run_comparison](wxCommandEvent&){run_comparison();});
 +    compare->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
 +    slice->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
-+    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,mode_buttons,i,state,run_slice,run_comparison,context](wxCommandEvent&){
++    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,requested,paint_selection,draw_comparison,i,state,run_slice,run_comparison,context](wxCommandEvent&){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
-+            for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==*selection);return;
++            paint_selection();return;
 +        }
-+        const bool changed=*selection!=i;
-+        *selection=i;for(int n=0;n<3;++n)(*mode_buttons)[n]->SetValue(n==i);
++        const bool changed=*requested!=i;
++        *requested=i;*selection=i;wxGetApp().app_config->set("indx_slice_style",std::to_string(i));paint_selection();draw_comparison();
 +        if(changed || state->mode!=i || !state->displayed){
 +            if(state->context==context() && std::all_of(state->materials.begin(),state->materials.end(),[](const SliceState::MaterialResult& r){return r.valid;}))run_slice();
 +            else run_comparison();
 +        }
 +    });
++    native_preview->Bind(wxEVT_BUTTON,[dialog,state,requested,section_preview](wxCommandEvent&){
++        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        if(state->pending || !state->queue.empty() || !state->displayed || state->mode!=*requested || !plate || !plate->is_slice_result_valid())return;
++        p->select_view_3D("Preview");dialog->Close();
++    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice,material_help](wxTimerEvent&) {
++    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice,material_help,paint_selection,requested,section_preview,native_preview](wxTimerEvent&) {
 +        if(state->choosing)return;
++        native_preview->Enable(state->displayed && !state->pending && state->queue.empty() && state->mode==*requested);
 +        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
 +        slice->Enable(!busy && !state->pending);compare->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
@@ -2170,7 +2385,7 @@ index 00000000..285a5b99
 +                state->skip_unavailable=false;
 +                if(!state->queue.empty()) {
 +                    *selection=state->queue.front();state->queue.erase(state->queue.begin());
-+                    for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++                    paint_selection();run_slice();
 +                }else state->collecting=false;
 +                return;
 +            }
@@ -2182,9 +2397,10 @@ index 00000000..285a5b99
 +        }
 +        if(!plate || plate->get_index()!=state->plate){state->pending=false;state->queue.clear();invalidate_comparison();clear_metrics();progress_text->SetLabel(_L("Piatto cambiato: avvia lo slicing del piatto selezionato."));return;}
 +        if(busy){
++            section_preview->clear();
 +            state->seen_running=true;state->idle_ticks=0;
 +            const int percent=std::clamp(int(plate->get_slicing_percent()),0,100);progress->SetValue(percent);
-+            progress_text->SetLabel(state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Slicing del piatto corrente: %d%%"),percent));return;
++            progress_text->SetLabel(state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Confronto in corso: %s · %d%%"),labels[state->mode],percent));return;
 +        }
 +        if(p->is_background_process_update_scheduled())return;
 +        // A fast slice can finish between ticks. Require native validity plus a
@@ -2227,7 +2443,7 @@ index 00000000..285a5b99
 +            progress->SetValue(100);progress_text->SetLabel(_L("Slicing completato. Risultati del piatto corrente."));state->displayed=true;state->pending=false;
 +            if(!state->queue.empty()){
 +                *selection=state->queue.front();state->queue.erase(state->queue.begin());
-+                for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++                paint_selection();run_slice();
 +            }else if(state->collecting){
 +                state->collecting=false;
 +                Json measurements=Json::array();
@@ -2275,10 +2491,14 @@ index 00000000..285a5b99
 +                        state->choices=eligible;
 +                        for(int i=0;i<3;++i)if(i!=*selection)state->queue.push_back(i);
 +                        state->queue.push_back(*selection);*selection=state->queue.front();state->queue.erase(state->queue.begin());
-+                        for(int i=0;i<3;++i)(*mode_buttons)[i]->SetValue(i==*selection);run_slice();
++                        paint_selection();run_slice();
 +                    }
 +                }
 +            }else state->applying=false;
++            if(!state->pending && state->queue.empty() && !state->collecting && !state->choosing && state->mode==*requested && plate->get_slice_result()){
++                section_preview->load(*plate->get_slice_result());
++                metrics->SetLabel(wxString::Format(_L("%s | Tempo: %s | Materiale: %.1f g | Cambi tool: %d"),labels[*requested],wxString::FromUTF8(stats.estimated_normal_print_time),stats.total_weight,stats.total_toolchanges));
++            }
 +        }else if(state->seen_running || ++state->idle_ticks>=6){
 +            state->pending=false;state->queue.clear();
 +            if(state->phase==1){state->phase=2;state->approved_filament=0;state->trial_failed=true;run_slice(true);return;}
@@ -2290,10 +2510,10 @@ index 00000000..285a5b99
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
 new file mode 100644
-index 00000000..f90cdd89
+index 00000000..9ad6efd4
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.hpp
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,19 @@
 +#pragma once
 +#include <string>
 +#include <nlohmann/json.hpp>
@@ -2307,6 +2527,8 @@ index 00000000..f90cdd89
 +bool configure_indx_connection(wxWindow* parent);
 +void configure_indx_nozzles(wxWindow* parent);
 +bool is_indx_profile();
++wxWindow* create_indx_mapping_controls(wxWindow* parent);
++wxWindow* create_indx_tool_selector(wxWindow* parent,wxWindow* filament_control,int filament_index);
 +void refresh_indx_preflight(const Print& print);
 +bool check_indx_printer(wxWindow* parent, const Print& print, bool sending = false, const std::string& target = {}, wxTextCtrl* output = nullptr);
 +bool suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr, int infill_filament = 0, nlohmann::json* material_plan = nullptr, int primary_filament = 0);
@@ -2335,7 +2557,7 @@ index ae0c0c46..fbbd6660 100644
                                                   filament_type);
                  return false;
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 6e4d3e34..52ddce97 100644
+index 6e4d3e34..5d1692de 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -1,3 +1,5 @@
@@ -2357,7 +2579,7 @@ index 6e4d3e34..52ddce97 100644
      p->m_panel_filament_title->Layout();
      scrolled_sizer->Add(p->m_panel_filament_title, 0, wxEXPAND | wxALL, 0);
      // ORCA add bottom border for seperation wile sections folded
-@@ -3359,6 +3365,15 @@ Sidebar::Sidebar(Plater *parent)
+@@ -3359,6 +3365,16 @@ Sidebar::Sidebar(Plater *parent)
      p->m_bpButton_ams_filament = ams_btn;
  
      bSizer39->Add(ams_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
@@ -2368,12 +2590,25 @@ index 6e4d3e34..52ddce97 100644
 +        e.Enable(is_indx_profile());
 +    });
 +    indx_actions->Add(indx_sync_btn,0,wxALIGN_CENTER|wxLEFT,FromDIP(SidebarProps::WideSpacing()));
++    indx_actions->Add(create_indx_mapping_controls(p->m_panel_filament_title),1,wxEXPAND|wxALL,FromDIP(4));
 +    install_indx_profile_publisher(this);
 +
      //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
  
      ScalableButton* set_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "settings");
-@@ -11364,6 +11379,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
+@@ -3748,7 +3764,10 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
+     auto side = filament_idx % 2;
+     auto /***/sizer_filaments = this->p->sizer_filaments->GetItem(side)->GetSizer();
+     if (side == 1 && filament_idx > 1) sizer_filaments->Remove(filament_idx / 2);
+-    sizer_filaments->Add(combo_and_btn_sizer, 1, wxEXPAND);
++    auto* filament_with_tool=new wxBoxSizer(wxVERTICAL);
++    filament_with_tool->Add(combo_and_btn_sizer,0,wxEXPAND);
++    filament_with_tool->Add(create_indx_tool_selector(p->m_panel_filament_content,*combo,filament_idx),0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,FromDIP(8));
++    sizer_filaments->Add(filament_with_tool, 1, wxEXPAND);
+     if (side == 0 && filament_idx > 0) {
+         sizer_filaments = this->p->sizer_filaments->GetItem(1)->GetSizer();
+         sizer_filaments->AddStretchSpacer(1);
+@@ -11364,6 +11383,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
      else
          invalidated = background_process.apply(this->model, preset_bundle->full_config(false));
  
@@ -2393,7 +2628,7 @@ index 6e4d3e34..52ddce97 100644
      if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))
          // BBS: add only gcode mode
          q->set_only_gcode(false);
-@@ -13859,6 +13887,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
+@@ -13859,6 +13891,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
  
  void Plater::priv::on_action_send_to_printer(bool isall)
  {
@@ -2405,7 +2640,7 @@ index 6e4d3e34..52ddce97 100644
  	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
      if (isall) {
          m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
-@@ -20890,6 +20923,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
+@@ -20890,6 +20927,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
  }
  void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
  {
@@ -2416,7 +2651,7 @@ index 6e4d3e34..52ddce97 100644
      // if physical_printer is selected, send gcode for this printer
      // DynamicPrintConfig* physical_printer_config = wxGetApp().preset_bundle->physical_printers.get_selected_printer_config();
      DynamicPrintConfig* physical_printer_config = &Slic3r::GUI::wxGetApp().preset_bundle->printers.get_edited_preset().config;
-@@ -20899,6 +20936,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -20899,6 +20940,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
      PrintHostJob upload_job(physical_printer_config);
      if (upload_job.empty())
          return;
@@ -2751,6 +2986,52 @@ index 1fbedcda..4046b401 100644
  bool test_if_solid_surface_filled(const ExPolygon& expolygon, double flow_spacing, double angle = 0, double density = 1.0);
  
  #if 0
+diff --git a/tests/fff_print/test_gcodeprocessor.cpp b/tests/fff_print/test_gcodeprocessor.cpp
+index 48cf3e8a..3d44a283 100644
+--- a/tests/fff_print/test_gcodeprocessor.cpp
++++ b/tests/fff_print/test_gcodeprocessor.cpp
+@@ -9,6 +9,7 @@
+ #include "libslic3r/BoundingBox.hpp"
+ #include "libslic3r/Config.hpp"
+ #include "libslic3r/GCode/GCodeProcessor.hpp"
++#include "libslic3r/IndxPreview.hpp"
+ #include "libslic3r/Model.hpp"
+ #include "libslic3r/Print.hpp"
+ #include "libslic3r/TriangleMesh.hpp"
+@@ -557,3 +558,33 @@ TEST_CASE("Each extrusion weighs its filament's density", "[GCodeProcessor]")
+     const Vec3d dense = center_of(masses[1]->total());
+     CHECK_THAT((plate - light).dot(dense - light) / (dense - light).squaredNorm(), Catch::Matchers::WithinAbs(0.75, 0.01));
+ }
++
++
++TEST_CASE("INDX sections retain measured heights and widths while excluding purge and support", "[INDX][IndxPreview]")
++{
++    GCodeProcessorResult result;
++    GCodeProcessorResult::MoveVertex move;
++    move.position=Vec3f(0,0,.2f);result.moves.push_back(move);
++    move.type=EMoveType::Extrude;move.extrusion_role=erExternalPerimeter;
++    move.position=Vec3f(10,0,.2f);move.print_z=.2f;move.width=.22f;move.height=.2f;result.moves.push_back(move);
++    move.extrusion_role=erWipeTower;move.position=Vec3f(20,0,.2f);result.moves.push_back(move);
++    move.extrusion_role=erSupportMaterial;move.position=Vec3f(30,0,.2f);result.moves.push_back(move);
++    move.type=EMoveType::Travel;move.position=Vec3f(0,0,.4f);result.moves.push_back(move);
++    move.type=EMoveType::Extrude;move.extrusion_role=erInternalInfill;move.position=Vec3f(10,0,.4f);
++    move.print_z=.4f;move.width=.85f;move.height=.4f;result.moves.push_back(move);
++    const auto data=Indx::layer_preview(result);
++    REQUIRE(data.layers.size()==2);
++    REQUIRE(data.layers[0].segments.size()==1);
++    REQUIRE(data.layers[1].segments.size()==1);
++    CHECK(data.layers[0].z==Catch::Approx(.2f));
++    CHECK(data.layers[0].segments[0].width==Catch::Approx(.22f));
++    CHECK(data.layers[1].segments[0].height==Catch::Approx(.4f));
++    CHECK(data.layers[1].segments[0].width==Catch::Approx(.85f));
++    CHECK(data.layers[1].segments[0].infill);
++    CHECK_FALSE(data.layers[0].segments[0].infill);
++    CHECK(data.max_x==Catch::Approx(10.f));
++    const auto bounded=Indx::layer_preview(result,1);
++    CHECK(bounded.too_large);
++    CHECK(bounded.layers.empty());
++    CHECK(Indx::layer_preview(GCodeProcessorResult()).layers.empty());
++}
 diff --git a/tests/fff_print/test_gcodewriter.cpp b/tests/fff_print/test_gcodewriter.cpp
 index d491527d..a2e73969 100644
 --- a/tests/fff_print/test_gcodewriter.cpp
@@ -2803,10 +3084,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..32a582c7
+index 00000000..651862cb
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,385 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -3020,18 +3301,45 @@ index 00000000..32a582c7
 +}
 +
 +
-+TEST_CASE("Identical filament slots expose all mounted tools from the default map", "[IndxChecks]") {
++TEST_CASE("One filament slot per tool exposes the tools independently of color and material", "[IndxChecks]") {
 +    Json slots=Json::array();for(int t=0;t<4;++t)slots.push_back({{"material","PLA"},{"color","#00FF00"}});
 +    const std::vector<int> identity={1,2,3,4},defaults={1,1,1,1},custom={2,1,3,4};
 +    CHECK(proposal_mapping(slots,4,{})==identity);
 +    CHECK(proposal_mapping(slots,4,defaults)==identity);
 +    CHECK(proposal_mapping(slots,4,custom)==custom);
++    CHECK(proposal_mapping(slots,4,defaults,true,true)==defaults);
++    CHECK(proposal_mapping(slots,4,custom,true,true)==custom);
 +    CHECK(proposal_mapping(slots,4,{1,1,1,4},true)==identity);
 +    CHECK(proposal_mapping(slots,4,custom,true)==identity);
-+    slots[3]["color"]="#FFFFFF";CHECK(proposal_mapping(slots,4,defaults)==defaults);
++    slots[3]["color"]="#FFFFFF";CHECK(proposal_mapping(slots,4,defaults)==identity);
 +    slots[3]["color"]="#00FF00";slots[3]["material"]="PETG";
++    CHECK(proposal_mapping(slots,4,defaults)==identity);
++    CHECK(proposal_mapping(slots,4,custom)==custom);
++    slots.push_back({{"material","ABS"},{"color","#FFFFFF"}});
 +    CHECK(proposal_mapping(slots,4,defaults)==defaults);
++    slots.erase(slots.end()-1);
 +    slots.erase(slots.end()-1);CHECK(proposal_mapping(slots,4,defaults)==defaults);
++}
++
++TEST_CASE("Detail uses the selected second slot fine nozzle with a different first slot color", "[IndxChecks]") {
++    Json slots=Json::array(),candidates=Json::array(),mounted=Json::array();
++    const std::vector<double> diameters={.6,.4,.6,.8};
++    for(int t=0;t<4;++t)slots.push_back({{"material","PLA"},{"color",t==0?"#FFFFFF":"#26A69A"}});
++    const auto mapping=proposal_mapping(slots,4,{1,1,1,1});
++    for(int f=0;f<4;++f){
++        const int tool=mapping.at(f)-1;
++        candidates.push_back({{"filament",f+1},{"tool",tool},{"diameter",diameters.at(tool)},{"material",slots[f]["material"]},{"color",slots[f]["color"]}});
++        mounted.push_back({{"tool",f},{"diameter",diameters[f]}});
++    }
++    const auto plan=material_proposal(candidates,"detail",mounted,2);
++    CHECK(plan.at("roles").at("wall").at("tool")==1);
++    CHECK(plan.at("roles").at("solid").at("tool")==1);
++    CHECK(plan.at("roles").at("infill").at("tool")==3);
++    CHECK(plan.at("roles").at("wall").at("diameter")==.4);
++    CHECK_THROWS_AS(material_proposal(candidates,"detail",mounted,1),std::invalid_argument);
++    candidates[0]["material"]="ABS";
++    CHECK(material_proposal(candidates,"detail",mounted,2).at("roles").at("infill").at("filament")==4);
++    CHECK_THROWS_AS(material_proposal(candidates,"detail",mounted,1),std::invalid_argument);
 +}
 +
 +

@@ -124,3 +124,7 @@ In Auto slicing optimization aprire Materiali e supporti: candidati caricati, al
 ## Riapertura e modalita non disponibili
 
 Il colore predefinito riscritto dall’importazione 3MF non genera un falso conflitto sulle impostazioni del profilo: il colore effettivo dello slot resta sincronizzato separatamente. Modifiche reali a PA, flow e temperature restano protette. Una modalita priva dell’ugello richiesto viene indicata come Non disponibile e il confronto prosegue con le altre; non vengono inventati risultati per la modalita mancante.
+
+## 17 ottobre — mappatura nella pagina principale
+
+Automatico / Manuale accanto a INDX, selettore Tool sotto ogni filamento, rispetto della mappa manuale in Auto slice. [Verifica con il filamento 2](PROVA_MAPPATURA_TOOL.md). Sezione del risultato scelto e panoramica Mainsail documentate nella guida completa.
