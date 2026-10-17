@@ -22,10 +22,10 @@ index f520c536..b23462a0 100644
  ProcessorCount(NPROC)
 diff --git a/docs/HLSD/INDX.md b/docs/HLSD/INDX.md
 new file mode 100644
-index 00000000..5bd55e04
+index 00000000..bce20f48
 --- /dev/null
 +++ b/docs/HLSD/INDX.md
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,47 @@
 +# INDX personal filament library
 +
 +The INDX GUI button links an Orca printer with a configurable number of passive tools to the printer's Moonraker configuration directory. The tools share a Klipper feeder and heater; tool selection remains part of the printer's CHANGE_TOOL macro. The feature is gated by INDX_PRINT_START in the printer start script and 1-64 nozzle diameters (the Orca software bound). The G-code writer recognizes INDX_PRINT_START in the printer start script.
@@ -71,6 +71,8 @@ index 00000000..5bd55e04
 +Le proposte mantengono il riempimento sparso sul maggiore ugello disponibile in ogni stile. Dettaglio sceglie il piu fine fino a 0,4 mm per pareti e superfici. Equilibrato sceglie il maggiore fino a 0,6 mm per pareti e superfici, ricadendo sul minore disponibile se nessuno rispetta tale soglia. Tra tool dello stesso diametro viene preferito il primo senza introdurre cambi ridondanti per le funzioni fini. La griglia Z dipende soltanto dai tool delle funzioni effettivamente usate; l'infill combinato resta limitato dal suo ugello.
 +
 +Il controllo di compatibilita materiale INDX consulta la capacita del primo feeder fisico condiviso, anziche interpretare T3 o T63 come estrusori fisici distinti. Una capacita materiale assente resta un blocco; per le altre stampanti restano le capacita per estrusore, con shift fuori intervallo respinti.
++
++Veloce usa il maggiore ugello disponibile per pareti, superfici e riempimento sparso. Dettaglio ed Equilibrato mantengono i propri target per pareti e superfici. Con 0,4/0,6/0,8: Veloce seleziona 0,8 per tutte le funzioni proposte; gli ugelli piu piccoli montati ma inutilizzati non limitano la griglia Z. Supporti e pittura conservano le proprie assegnazioni esplicite.
 diff --git a/localization/i18n/list.txt b/localization/i18n/list.txt
 index 12831803..9cf3d41f 100644
 --- a/localization/i18n/list.txt
@@ -148,7 +150,7 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..85588637
+index 00000000..0d0ff2ef
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
 @@ -0,0 +1,165 @@
@@ -232,7 +234,7 @@ index 00000000..85588637
 +    if(style=="detail")for(const auto& tool:mounted)
 +        if(tool.at("diameter").get<double>()+.0001<wall.at("diameter").get<double>())
 +            throw std::invalid_argument("fine_tool_unassigned");
-+    if(style=="speed")for(const auto& c:candidates)if(c.at("diameter").get<double>()<=.4001)wall=c;
++    if(style=="speed")wall=candidates.back();
 +    if(style=="balanced")for(const auto& c:candidates)
 +        if(c.at("diameter").get<double>()<=.6001 && c.at("diameter").get<double>()>wall.at("diameter").get<double>()+.0001)wall=c;
 +    const auto infill=candidates.back();
@@ -461,7 +463,7 @@ index fbfd44a4..90670d1a 100644
              // the arc length instead of the length of a single chord.
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..db49973e
+index 00000000..0ea539d1
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
 @@ -0,0 +1,974 @@
@@ -1035,7 +1037,7 @@ index 00000000..db49973e
 +void suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output) {
 +    if(!is_indx_printer())return;
 +    try {
-+        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: pareti fino a 0,4 mm, infill con ugello maggiore"));
++        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: ugello maggiore per pareti, superfici e infill"));
 +        wxSingleChoiceDialog choice(parent,_L("La proposta riguarda pareti, superfici e infill. Supporti e pittura mantengono le assegnazioni esistenti. Tempi e cambi effettivi sono disponibili dopo lo slicing."),_L("Proposta tool INDX"),labels);
 +        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return;style=choice.GetSelection();}
 +        auto& bundle=*wxGetApp().preset_bundle;
@@ -1754,10 +1756,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..1b75a84f
+index 00000000..5071e6c6
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,185 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -1800,7 +1802,7 @@ index 00000000..1b75a84f
 +    CHECK(propose_roles(candidates,"balanced")["wall"]["filament"]==1);
 +    CHECK(propose_roles(candidates,"balanced")["infill"]["tool"]==7);
 +    CHECK(propose_roles(candidates,"detail")["infill"]["tool"]==7);
-+    CHECK(propose_roles(candidates,"speed")["wall"]["tool"]==4);
++    CHECK(propose_roles(candidates,"speed")["wall"]["tool"]==7);
 +    auto mixed=candidates;mixed[0]["material"]="PETG";
 +    CHECK_THROWS_AS(propose_roles(mixed,"balanced"),std::invalid_argument);
 +    CHECK_THROWS_AS(propose_roles(Json::array(),"balanced"),std::invalid_argument);
@@ -1932,6 +1934,16 @@ index 00000000..1b75a84f
 +    CHECK(filament_printable(2u,tool,false)==(tool==1));
 +    CHECK_FALSE(filament_printable(1u,-1,true));
 +    CHECK_FALSE(filament_printable(1u,64,true));
++}
++
++
++TEST_CASE("Speed uses the largest available nozzle for every proposed role", "[IndxChecks]") {
++    const double largest=GENERATE(.6,.8,1.0,1.2);
++    Json candidates=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PLA"}},
++        {{"filament",2},{"tool",1},{"diameter",largest},{"material","PLA"}},
++        {{"filament",3},{"tool",2},{"diameter",.2},{"material","PLA"}}});
++    const auto roles=propose_roles(candidates,"speed",candidates);
++    for(const std::string role:{"wall","solid","infill"})CHECK(roles[role]["tool"]==1);
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

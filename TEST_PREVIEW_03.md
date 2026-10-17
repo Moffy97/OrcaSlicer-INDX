@@ -51,3 +51,12 @@ Verifica GUI aggiornata: entrambe le combinazioni confermate nel riepilogo. Nel 
 ![Dettaglio: 0,4 pareti e superfici, 0,8 infill](ottimizzazione-dettaglio-04-08.png)
 
 ![Equilibrato: 0,6 pareti e superfici, 0,8 infill](ottimizzazione-equilibrato-06-08.png)
+
+
+## Veloce sul maggiore ugello
+
+Build Windows Release riuscita. Suite IndxChecks: 275 asserzioni in 11 casi, ordine casuale. Veloce assegna wall/solid/infill al maggiore ugello; casi 0,6/0,8/1,0/1,2 con candidati in ordine non crescente. Dettaglio ed Equilibrato restano coperti dai test precedenti.
+
+Verifica GUI: Veloce mostra T3 da 0,80 per pareti, superfici e riempimento. Nel 3MF salvato le sei funzioni proposte sono tutte sul filamento 4.
+
+![Veloce: ugello maggiore per tutte le funzioni proposte](ottimizzazione-veloce-08.png)

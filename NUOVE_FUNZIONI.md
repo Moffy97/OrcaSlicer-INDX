@@ -51,3 +51,8 @@ La proposta legge i preset e la mappatura attuali del piatto. Se sono presenti a
 Dettaglio sceglie l'ugello piu fine e richiede pareti da 0,4 mm o meno. Con T0=0,6, T1=0,4, T2=0,6 e T3=0,8, propone T1 per pareti e superfici. Dettaglio usa comunque il maggiore ugello per infill. Equilibrato sceglie il maggiore fino a 0,6 mm per pareti e superfici e il maggiore disponibile per infill. Con questo montaggio: Dettaglio 0,4/0,8 ed Equilibrato 0,6/0,8. Uno 0,2 associato prevale sullo 0,4 per Dettaglio. Tutti i tool diventano disponibili alla scelta; non viene imposto di usare ugelli equivalenti, aggiungendo cambi inutili.
 
 Se manca il filamento per un ugello fine montato, la proposta lo segnala anziche sostituirlo con uno 0,6 e chiamarlo Dettaglio. Materiali/colori diversi non vengono rimappati automaticamente. Il software non dichiara carichi fisici o calibrazioni per effetto della proposta. Salva il progetto e rislicera.
+
+
+## Veloce: ugello maggiore per tutte le funzioni proposte
+
+Veloce assegna pareti, superfici e riempimento al maggiore ugello disponibile tra i filamenti associati. Con 0,6/0,4/0,6/0,8 usa T3 da 0,8 per tutte queste funzioni. Dettaglio resta 0,4/0,8 ed Equilibrato 0,6/0,8. I supporti e le parti dipinte mantengono le assegnazioni esplicite esistenti. Il limite Z continua a dipendere dai tool effettivamente usati e non aumenta una richiesta di layer piu fine.
