@@ -4,6 +4,8 @@ Aggiornamento del 17 ottobre 2026. Il touch della SV08 Max usa ora il tema globa
 
 ## Sul touchscreen
 
+Correzione dimensioni display: scala esplicita anche per i testi interni dei controlli GTK, margini esterni ridotti e contenitore finale scorrevole. Verificato con i pulsanti reali KlippyGtk, font di sistema 32 px e spazio riservato a barra titolo e comandi laterali, a 1024×600 e 1280×800. Il pulsante di conferma Filamenti rimane entro l'area visibile; i campi successivi si raggiungono scorrendo.
+
 - **Panoramica:** schede Tn con diametro, Standard/CHT, filamento assegnato e stati PA/flow/portata. Una spunta richiede una calibrazione ancora valida, non il semplice salvataggio di un numero. Lo stato montaggio confermato indica la dichiarazione salvata, non il completamento del collaudo fisico.
 - **Navigazione laterale:** rimane visibile fra le otto pagine. Selezionare un tool o aprire una pagina non aggancia la testa.
 - **Filamenti:** scelta della base a sinistra, colore e temperature a destra, pulsante di conferma sempre visibile. Marca e materiale rimangono elenchi dipendenti. Il nome si sceglie alla conferma.
