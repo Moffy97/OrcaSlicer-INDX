@@ -4,11 +4,11 @@ Versione sperimentale di OrcaSlicer con integrazione KlipperScreen per una Sovol
 
 ## Download e guida
 
-Apri la [release](https://github.com/Moffy97/OrcaSlicer-INDX/releases/tag/v0.3.0-preview.20261017) e scorri fino ad **Assets**:
+Apri la [release](https://github.com/Moffy97/OrcaSlicer-INDX/releases/tag/v0.3.1-preview.20261018) e scorri fino ad **Assets**:
 
-- [Installer Windows x64](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.0-preview.20261017/OrcaSlicer-INDX-SV08Max-0.3.0-preview-Setup-x64.exe): programma, profili iniziali, guida e collegamento nel menu Start.
-- [Versione portatile ZIP](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.0-preview.20261017/OrcaSlicer-INDX-Windows-x64-0.3.0-preview.zip): estrarre tutto e aprire Avvia-Orca-INDX.cmd. Lo ZIP originale conserva la precedente interfaccia; l'installer contiene il layout aggiornato.
-- [Plugin KlipperScreen SV08 Max](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.0-preview.20261017/KlipperScreen-INDX-SV08Max-plugin.zip) e [istruzioni di installazione e rollback](PLUGIN_KLIPPERSCREEN_SV08MAX.md).
+- [Installer Windows x64](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.1-preview.20261018/OrcaSlicer-INDX-SV08Max-0.3.1-preview-Setup-x64.exe): programma, profili iniziali, guida e collegamento nel menu Start.
+- [Versione portatile ZIP](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.1-preview.20261018/OrcaSlicer-INDX-Windows-x64-0.3.1-preview.zip): estrarre tutto e aprire Avvia-Orca-INDX.cmd. Installer e ZIP contengono la stessa versione aggiornata.
+- [Plugin KlipperScreen SV08 Max](https://github.com/Moffy97/OrcaSlicer-INDX/releases/download/v0.3.1-preview.20261018/KlipperScreen-INDX-SV08Max-plugin.zip) e [istruzioni di installazione e rollback](PLUGIN_KLIPPERSCREEN_SV08MAX.md).
 - [Profili scaricabili](PROFILI_DOWNLOAD.md).
 - [Guida completa illustrata](Guida_completa_INDX_Orca_KlipperScreen.pdf).
 
@@ -21,8 +21,8 @@ La barra laterale raggruppa gli ugelli in schede con numero tool, diametro in mm
 1. Parti dal profilo SV08 Max INDX incluso e verifica gli ugelli reali. Il profilo pubblico iniziale usa 0,4 / 0,4 / 0,6 / 0,8 mm, non i dati personali di una stampante.
 2. Configura la connessione nella sezione stampante di Orca. In Automatico ricevi i tool dichiarati e confermati su KlipperScreen; in Manuale modifichi il profilo locale. Il firmware e il touchscreen non vengono riconfigurati dai pulsanti locali.
 3. Crea o richiama un filamento, scegli colore e parametri, quindi assegnalo al tool desiderato. La libreria distingue filamenti standard e personalizzati e conserva le calibrazioni per filamento, tool, diametro e tipo ugello.
-4. Apri INDX per informazioni, configurazione tool e ottimizzazione automatica. Dettaglio, Equilibrato e Veloce confrontano tempi, consumo e cambi tool; le alternative di materiale richiedono compatibilita e un beneficio misurato.
-5. Controlla l'anteprima e rigenera lo slicing dopo le modifiche. I dati sincronizzati non cambiano un G-code gia esportato.
+4. Apri INDX Auto Slice accanto a Elabora piatto. Dettaglio, Equilibrato e Veloce confrontano automaticamente ugelli, altezze, riempimento combinato, tempi, layer totali, consumo e cambi tool. Pareti e superfici conservano il colore primario; il riempimento puo usare altri colori dello stesso materiale. Conferma il risultato per aprire la sua anteprima memorizzata senza ripetere lo slicing.
+5. Controlla l'anteprima; modificare il modello o i parametri invalida i risultati memorizzati. I dati sincronizzati non cambiano un G-code gia esportato.
 
 I layer vengono limitati dagli ugelli usati nel piatto corrente, inclusi supporti e assegnazioni per parte o altezza. Un tool montato ma inutilizzato non limita il progetto. Il riempimento combinato puo sommare piu layer parete entro il limite del proprio ugello. Le stime CHT non sostituiscono una misura di portata.
 

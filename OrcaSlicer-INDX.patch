@@ -187,23 +187,97 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..53d46c57
+index 00000000..06b4b8c6
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,409 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include "IndxMaterials.hpp"
++#include "IndxNozzle.hpp"
 +#include <cmath>
 +#include <cstdint>
++#include <cstddef>
 +#include <string>
 +#include <vector>
 +#include <algorithm>
 +#include <stdexcept>
 +#include <limits>
++#include <sstream>
++#include <locale>
 +
 +namespace Slic3r { namespace Indx {
 +using Json = nlohmann::json;
++// Absolute purpose settings make switching repeatable; they never compound
++// multipliers from the previously compared purpose or mode.
++struct PurposeSettings {
++    int walls,top_layers,bottom_layers;
++    double infill,top_thickness,bottom_thickness;
++};
++inline PurposeSettings purpose_settings(int purpose) {
++    switch(purpose) {
++    case 0:return {3,3,3,20.,1.,.8};
++    case 1:return {3,4,3,15.,1.2,1.};
++    case 2:return {5,4,4,40.,1.2,1.2};
++    case 3:return {2,2,2,10.,.6,.6};
++    default:throw std::invalid_argument("invalid_purpose");
++    }
++}
++// Only active tools supply the bounds. The print pipeline additionally checks
++// support, painted regions and tower tools before accepting the common Z grid.
++inline double z_step_from_notes(const std::string& notes) {
++    const std::string marker="INDX_Z_STEP=";
++    const auto at=notes.find(marker);
++    if(at==std::string::npos)return 0.;
++    std::istringstream input(notes.substr(at+marker.size()));
++    input.imbue(std::locale::classic());
++    double value=0.;
++    return (input>>value) && std::isfinite(value) && value>0. && value<1.?value:0.;
++}
++// Unknown mechanics leave heights unquantized; callers must supply a verified grid.
++inline double align_z_height(double height,double lower,double upper,double step=0.) {
++    if(!std::isfinite(step) || step<0. || !std::isfinite(height) || lower<=0. || upper<lower)
++        throw std::invalid_argument("invalid_z_grid");
++    if(step==0.)return std::clamp(height,lower,upper);
++    const double low=std::ceil((lower-1e-9)/step)*step;
++    const double high=std::floor((upper+1e-9)/step)*step;
++    if(low>high+1e-9)throw std::invalid_argument("empty_z_grid");
++    return std::clamp(std::floor((height+1e-9)/step)*step,low,high);
++}
++inline double purpose_layer_height(int style,int purpose,double visible_diameter,double lower,double upper,double step=0.) {
++    if(style<0 || style>2 || purpose<0 || purpose>3 || !std::isfinite(visible_diameter) ||
++       !std::isfinite(lower) || !std::isfinite(upper) || visible_diameter<=0. || lower<=0. || upper<lower)
++        throw std::invalid_argument("invalid_layer_limits");
++    double ratio=style==0?.4:style==1?.5:.75;
++    if(purpose==1)ratio=style==0?.25:style==1?.3:.35;
++    if(purpose==2)ratio=style==0?.35:style==1?.45:.55;
++    if(purpose==3)ratio=style==0?.45:style==1?.6:.8;
++    return align_z_height(visible_diameter*ratio,lower,upper,step);
++}
++
++inline int purpose_shell_layers(int minimum,double thickness,double height) {
++    if(minimum<1 || !std::isfinite(thickness) || !std::isfinite(height) || thickness<=0. || height<=0.)
++        throw std::invalid_argument("invalid_shell_height");
++    return std::max(minimum,int(std::ceil((thickness-1e-8)/height)));
++}
++// Evaluate every feasible infill grouping transition on the machine grid, plus
++// a nominal half-nozzle candidate. The purpose controls surface quality; native
++// slicing measures geometry, volumetric limits and tool-change overhead.
++inline std::vector<double> layer_height_candidates(double base,double lower,double infill_limit,bool different_tools,double step=0.,double nominal=0.) {
++    (void)different_tools; // Infill grouping can save work even with one tool.
++    if(!std::isfinite(base) || !std::isfinite(infill_limit) || base<=0. || lower<=0. || lower>base || infill_limit<=0.)
++        throw std::invalid_argument("invalid_layer_search");
++    base=align_z_height(base,lower,base,step);
++    std::vector<double> heights{base};
++    auto add=[&](double value){
++        if(value<lower-1e-8 || value>base+1e-8)return;
++        const double h=align_z_height(value,lower,base,step);
++        if(std::none_of(heights.begin(),heights.end(),[&](double old){return std::abs(old-h)<1e-7;}))heights.push_back(h);
++    };
++    if(nominal>0.){add(nominal);add(nominal*1.5);}
++    for(int n=1;n<=int(std::floor((infill_limit+1e-8)/lower));++n)add(infill_limit/n);
++    return heights;
++}
 +// Orca may expand a scalar filament vector to the physical extruder variants.
 +// Repeating the same value changes representation, not a filament setting.
 +inline Json canonical_profile_config(Json data,bool include_default_color=false) {
@@ -295,6 +369,15 @@ index 00000000..53d46c57
 +    return maps;
 +}
 +
++// Manual ownership is exclusive. Zero is a UI-only unassigned sentinel;
++// native filament_map stays valid, with inactive slots stored separately.
++inline std::vector<int> claim_tool(std::vector<int> maps,size_t slot,int tool) {
++    if(slot>=maps.size() || tool<0)throw std::invalid_argument("invalid_tool_assignment");
++    if(tool>0)for(size_t i=0;i<maps.size();++i)if(i!=slot && maps[i]==tool)maps[i]=0;
++    maps[slot]=tool;
++    return maps;
++}
++
 +// Passive INDX tools share the first physical feeder/heater's material capability.
 +inline bool filament_printable(unsigned int mask,int tool,bool shared) {
 +    if(tool<0 || tool>=64)return false;
@@ -318,7 +401,7 @@ index 00000000..53d46c57
 +    if(style=="speed")wall=candidates.back();
 +    if(style=="balanced")for(const auto& c:candidates)
 +        if(c.at("diameter").get<double>()<=.6001 && c.at("diameter").get<double>()>wall.at("diameter").get<double>()+.0001)wall=c;
-+    const auto infill=candidates.back();
++    const auto infill=style=="balanced"?wall:candidates.back();
 +    return {{"wall",wall},{"solid",wall},{"infill",infill}};
 +}
 +
@@ -342,7 +425,8 @@ index 00000000..53d46c57
 +}
 +inline bool model_material_allowed(const std::string& a,const std::string& b) { return Materials::model_allowed(a,b); }
 +
-+// Primary roles retain the selected material/color. Documented conditional pairs
++// Visible roles retain the selected material/color. Sparse infill may use any
++// color of the same polymer. Documented conditional pairs
 +// may only be tried as infill alternatives, then explicitly approved after measuring
 +// their benefit. Flexibility/mechanical changes remain visible in that decision.
 +// Compare the same whole-second resolution shown to the operator. Invalid,
@@ -365,6 +449,35 @@ index 00000000..53d46c57
 +    return choices;
 +}
 +
++// Enumerate available assignments, not hypothetical hardware. Visible roles
++// preserve the selected polymer/color; only explicitly approved trials may use
++// a different compatible polymer for sparse infill.
++inline Json role_combinations(const Json& candidates,const std::string& style,int primary_filament,int forced_infill=0) {
++    const auto primary=std::find_if(candidates.begin(),candidates.end(),[&](const Json& c){return c.at("filament")==primary_filament;});
++    if(primary==candidates.end())throw std::invalid_argument("missing_primary");
++    const auto material=primary->at("material");const auto color=primary->value("color",std::string());
++    double visible_cap=style=="detail"?.4001:style=="balanced"?.6001:std::numeric_limits<double>::max();
++    if(style=="balanced"){
++        double smallest=std::numeric_limits<double>::max();
++        for(const auto& c:candidates)if(!c.value("support",false) && c.at("material")==material && c.value("color",std::string())==color)
++            smallest=std::min(smallest,c.at("diameter").get<double>());
++        visible_cap=std::max(visible_cap,smallest);
++    }
++    Json visible=Json::array(),infill=Json::array(),plans=Json::array();
++    for(const auto& c:candidates){
++        const double d=c.at("diameter").get<double>();
++        if(c.value("support",false) || !std::isfinite(d) || d<=0.)continue;
++        if(c.at("material")==material && c.value("color",std::string())==color && d<=visible_cap)visible.push_back(c);
++        if(style=="balanced" && d>visible_cap)continue;
++        if(forced_infill>0){
++            if(c.at("filament")==forced_infill && model_material_allowed(material.get<std::string>(),c.at("material").get<std::string>()))infill.push_back(c);
++        }else if(c.at("material")==material)infill.push_back(c);
++    }
++    for(const auto& wall:visible)for(const auto& solid:visible)for(const auto& fill:infill)
++        plans.push_back({{"wall",wall},{"solid",solid},{"infill",fill}});
++    return plans;
++}
++
 +inline Json material_proposal(const Json& candidates,const std::string& style,const Json& mounted,int primary_filament) {
 +    auto primary=std::find_if(candidates.begin(),candidates.end(),[&](const Json& c){return c.at("filament")==primary_filament;});
 +    if(primary==candidates.end() || primary->value("material",std::string()).empty())throw std::invalid_argument("missing_primary_material");
@@ -377,14 +490,36 @@ index 00000000..53d46c57
 +        for(const auto& c:candidates)if(c.at("tool")==tool.at("tool")){assigned=true;if(c.at("material")==material && c.value("color",std::string())==color)same_material=true;}
 +        if(!assigned || same_material)relevant_mounting.push_back(tool);
 +    }
-+    const auto roles=propose_roles(same,style,relevant_mounting);
++    auto roles=propose_roles(same,style,relevant_mounting);
++    // Changing only the infill color does not change the selected exterior.
++    // Prefer the current tool on equal diameters to avoid needless tool changes.
++    for(const auto& c:candidates)
++        if(c.at("material")==material && (style!="balanced" || c.at("diameter").get<double>()<=.6001) && !c.value("support",false) &&
++           std::isfinite(c.at("diameter").get<double>()) &&
++           c.at("diameter").get<double>()>roles.at("infill").at("diameter").get<double>()+.0001)
++            roles["infill"]=c;
 +    const double current=roles.at("infill").at("diameter").get<double>();
 +    for(const auto& c:candidates)
-+        if((c.at("material")!=material || c.value("color",std::string())!=color) &&
++        if(c.at("material")!=material && (style!="balanced" || c.at("diameter").get<double>()<=.6001) &&
 +           model_material_allowed(material.get<std::string>(),c.at("material").get<std::string>()) && !c.value("support",false) &&
 +           std::isfinite(c.at("diameter").get<double>()) && c.at("diameter").get<double>()>current+.0001)alternatives.push_back(c);
 +    std::stable_sort(alternatives.begin(),alternatives.end(),[](const Json& a,const Json& b){return a.at("diameter").template get<double>()>b.at("diameter").template get<double>();});
 +    return {{"roles",roles},{"alternatives",alternatives},{"primary_material",material}};
++}
++
++// Manual body assignments still require real mapped slots and compatible polymers.
++inline Json manual_body_roles(const Json& candidates,int wall,int solid,int infill) {
++    Json roles=Json::object();
++    for(const auto& entry:std::vector<std::pair<std::string,int>>{{"wall",wall},{"solid",solid},{"infill",infill}}){
++        const auto found=std::find_if(candidates.begin(),candidates.end(),[&](const Json& c){return c.at("filament")==entry.second;});
++        if(found==candidates.end() || found->value("support",false) ||
++           found->value("material",std::string()).empty() || !std::isfinite(found->at("diameter").get<double>()) || found->at("diameter").get<double>()<=0.)
++            throw std::invalid_argument("invalid_manual_filament");
++        roles[entry.first]=*found;
++    }
++    for(const std::string role:{"solid","infill"})if(!model_material_allowed(roles["wall"]["material"].get<std::string>(),roles[role]["material"].get<std::string>()))
++        throw std::invalid_argument("incompatible_manual_materials");
++    return roles;
 +}
 +
 +// Shared protocol rules. Hardware is declared independently on the touchscreen;
@@ -518,6 +653,20 @@ index 00000000..f878baee
 +    return use=="same" || use=="conditional";
 +}
 +} } }
+diff --git a/src/libslic3r/IndxNozzle.hpp b/src/libslic3r/IndxNozzle.hpp
+new file mode 100644
+index 00000000..10cc7929
+--- /dev/null
++++ b/src/libslic3r/IndxNozzle.hpp
+@@ -0,0 +1,8 @@
++#pragma once
++#include <cmath>
++namespace Slic3r { namespace Indx {
++// Shared by nozzle synchronization, native validation and the Z optimizer.
++inline double nozzle_layer_limit(double diameter) {
++    return std::abs(diameter-.8)<1e-6?.64:diameter*.7;
++}
++} }
 diff --git a/src/libslic3r/IndxPreview.hpp b/src/libslic3r/IndxPreview.hpp
 new file mode 100644
 index 00000000..ef583efa
@@ -563,19 +712,65 @@ index 00000000..ef583efa
 +    return data;
 +}
 +}
+diff --git a/src/libslic3r/PresetBundle.cpp b/src/libslic3r/PresetBundle.cpp
+index 7d7855e6..9eabcc2b 100644
+--- a/src/libslic3r/PresetBundle.cpp
++++ b/src/libslic3r/PresetBundle.cpp
+@@ -138,6 +138,7 @@ static std::vector<std::string> s_project_options {
+     "nozzle_volume_type",
+     "filament_map_mode",
+     "filament_map",
++    "indx_unassigned_filaments",
+     // physical_extruder_map intentionally NOT here: it's owned by the printer
+     // preset (s_Preset_printer_options). Listing it project-scoped caused
+     // project_config's default [0] to clobber the preset's authored value
+@@ -4352,6 +4353,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::string new_color)
+     }
+     filament_color_type->resize(n);
+     filament_map->values.resize(n, 1);
++    auto& inactive=project_config.option<ConfigOptionInts>("indx_unassigned_filaments",true)->values;
++    inactive.erase(std::remove_if(inactive.begin(),inactive.end(),[n](int f){return f<1 || f>int(n);}),inactive.end());
+     filament_nozzle_map->values.resize(n, 0);
+     filament_volume_map->values.resize(n, static_cast<int>(NozzleVolumeType::nvtStandard));
+     ams_multi_color_filment.resize(n);
+@@ -4415,6 +4418,10 @@ void PresetBundle::update_num_filaments(unsigned int to_del_flament_id)
+         filament_volume_map->values.resize(to_del_flament_id, static_cast<int>(NozzleVolumeType::nvtStandard));
+     }
+ 
++    auto& inactive=project_config.option<ConfigOptionInts>("indx_unassigned_filaments",true)->values;
++    inactive.erase(std::remove(inactive.begin(),inactive.end(),int(to_del_flament_id)+1),inactive.end());
++    for(int& f:inactive)if(f>int(to_del_flament_id)+1)--f;
++
+     // lambda function to erase or resize the container
+     auto erase_or_resize = [to_del_flament_id](auto& container) {
+         if (container.size() > to_del_flament_id) {
 diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
-index 93a71dcd..602dc074 100644
+index 93a71dcd..ea844bad 100644
 --- a/src/libslic3r/Print.cpp
 +++ b/src/libslic3r/Print.cpp
-@@ -58,6 +58,7 @@
+@@ -58,6 +58,8 @@
  #include "IMEXHelpers.hpp"
  #include "IMEXZones.hpp"
  #include "Print.hpp"
 +#include "IndxMaterials.hpp"
++#include "IndxNozzle.hpp"
  #include "BoundingBox.hpp"
  #include "Brim.hpp"
  #include "ClipperUtils.hpp"
-@@ -672,6 +673,57 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
+@@ -575,9 +577,12 @@ bool Print::is_step_done(PrintObjectStep step) const
+     return true;
+ }
+ 
++static std::vector<unsigned int> indx_model_filaments(const Print& print);
+ // returns 0-based indices of used extruders
+ std::vector<unsigned int> Print::object_extruders() const
+ {
++    if(m_config.machine_start_gcode.value.find("INDX_PRINT_START")!=std::string::npos)
++        return indx_model_filaments(*this);
+     std::vector<unsigned int> extruders;
+     extruders.reserve(m_print_regions.size() * m_objects.size() * 3);
+ 
+@@ -672,6 +677,59 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
      return extruders;
  }
  
@@ -619,10 +814,12 @@ index 93a71dcd..602dc074 100644
 +    double cap = 0.;
 +    const auto filaments = indx_used_filaments();
 +    for (unsigned int filament : filaments) {
++        const auto* inactive=m_full_print_config.option<ConfigOptionInts>("indx_unassigned_filaments");
++        if(inactive && std::find(inactive->values.begin(),inactive->values.end(),int(filament)+1)!=inactive->values.end())continue;
 +        const size_t tool = get_extruder_index(m_config, filament);
 +        if (tool >= m_config.nozzle_diameter.size())
 +            continue;
-+        const double diameter_limit = 0.7 * m_config.nozzle_diameter.get_at(tool);
++        const double diameter_limit = Indx::nozzle_layer_limit(m_config.nozzle_diameter.get_at(tool));
 +        const double configured = m_config.max_layer_height.get_at(tool);
 +        const double limit = configured > 0. ? std::min(configured, diameter_limit) : diameter_limit;
 +        cap = cap > 0. ? std::min(cap, limit) : limit;
@@ -633,10 +830,18 @@ index 93a71dcd..602dc074 100644
  // Appends 0-based indices of the filaments the tool changes of the current plate switch to.
  void Print::append_tool_change_extruders(std::vector<unsigned int> &extruders) const
  {
-@@ -1881,6 +1933,41 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
+@@ -1881,6 +1939,49 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
      if (extruders.empty())
          return { L("No extrusions under current settings.") };
  
++    if(m_config.machine_start_gcode.value.find("INDX_PRINT_START")!=std::string::npos) {
++        const auto used=indx_used_filaments();
++        const auto* inactive=m_full_print_config.option<ConfigOptionInts>("indx_unassigned_filaments");
++        if(inactive)for(int slot:inactive->values)
++            if(slot>0 && std::find(used.begin(),used.end(),unsigned(slot-1))!=used.end())
++                return { L("INDX: un filamento usato nella stampa non ha un tool assegnato. Assegnalo nella sezione Filamenti.") };
++    }
++
 +    // Material adhesion and support release are distinct roles. A generic PLA/PETG
 +    // interface need not carry filament_is_support, and a flagged support spool
 +    // must not bypass checks when assigned to walls or infill.
@@ -675,6 +880,29 @@ index 93a71dcd..602dc074 100644
      // IDEX/IQEX: block multi-color in non-primary parallel modes when the active
      // configuration can't physically support it (no within-gantry toolchange path
      // or MMU lane sharing). See imex_multicolor_block_reason() for the full rule.
+@@ -2435,8 +2536,11 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
+ 		// Find the smallest used nozzle diameter and the number of unique nozzle diameters.
+ 		double min_nozzle_diameter = std::numeric_limits<double>::max();
+ 		double max_nozzle_diameter = 0;
+-		for (unsigned int extruder_id : extruders) {
+-			double dmr = m_config.nozzle_diameter.get_at(extruder_id);
++        const bool indx=m_config.machine_start_gcode.value.find("INDX_PRINT_START")!=std::string::npos;
++        const auto diameter_filaments=indx?indx_used_filaments():extruders;
++        for (unsigned int extruder_id : diameter_filaments) {
++            const size_t tool=indx?get_extruder_index(m_config,extruder_id):extruder_id;
++            double dmr = m_config.nozzle_diameter.get_at(tool);
+ 			min_nozzle_diameter = std::min(min_nozzle_diameter, dmr);
+ 			max_nozzle_diameter = std::max(max_nozzle_diameter, dmr);
+ 		}
+@@ -2544,7 +2648,7 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
+                     : object->config().support_filament-1;
+                 first_layer_min_nozzle_diameter = (first_layer_extruder == size_t(-1)) ?
+                     min_nozzle_diameter :
+-                    m_config.nozzle_diameter.get_at(first_layer_extruder);
++                    m_config.nozzle_diameter.get_at(indx?get_extruder_index(m_config,unsigned(first_layer_extruder)):first_layer_extruder);
+             } else {
+                 // if we don't have raft layers, any nozzle diameter is potentially used in first layer
+                 first_layer_min_nozzle_diameter = min_nozzle_diameter;
 diff --git a/src/libslic3r/Print.hpp b/src/libslic3r/Print.hpp
 index 11de1d80..d8de4304 100644
 --- a/src/libslic3r/Print.hpp
@@ -688,11 +916,64 @@ index 11de1d80..d8de4304 100644
      std::vector<unsigned int> extruders(bool conside_custom_gcode = false) const;
      double              max_allowed_layer_height() const;
      bool                has_support_material() const;
+diff --git a/src/libslic3r/PrintConfig.cpp b/src/libslic3r/PrintConfig.cpp
+index bab1d1b5..46e06d30 100644
+--- a/src/libslic3r/PrintConfig.cpp
++++ b/src/libslic3r/PrintConfig.cpp
+@@ -3034,6 +3034,12 @@ void PrintConfigDef::init_fff_params()
+     def->mode = comDevelop;
+     def->set_default_value(new ConfigOptionInts{1});
+ 
++    // Project-scoped, 1-based slots explicitly released by manual INDX mapping.
++    // Kept separate because native filament maps require a valid physical index.
++    def = this->add("indx_unassigned_filaments", coInts);
++    def->mode = comDevelop;
++    def->set_default_value(new ConfigOptionInts{});
++
+     // Multi-nozzle: per-filament map to the config slot identified by (extruder, nozzle_volume_type).
+     // Engine-internal per-filament slot map: recomputed at apply time from filament_map (plus the
+     // per-filament volume map when an extruder exposes several volume types) and used to key the
+@@ -12493,7 +12499,10 @@ std::map<std::string, std::string> validate(const FullPrintConfig &cfg, bool und
+             "skeleton_infill_line_width"};
+         for (size_t i = 0; i < sizeof(widths) / sizeof(widths[i]); ++ i) {
+             std::string key(widths[i]);
+-            double abs_width = cfg.get_abs_value(key, max_nozzle_diameter);
++            // A percentage bridge width is relative to each role's own nozzle.
++            // Resolving it against the largest nozzle then comparing to the
++            // smallest incorrectly rejects 100% on every mixed-nozzle setup.
++            double abs_width = cfg.get_abs_value(key, key == "bridge_line_width" ? min_nozzle_diameter : max_nozzle_diameter);
+             double allowed_max = (key == "bridge_line_width") ? min_nozzle_diameter : MAX_LINE_WIDTH_MULTIPLIER * max_nozzle_diameter;
+             if (abs_width > allowed_max) {
+                 if (key == "bridge_line_width")
 diff --git a/src/libslic3r/PrintObject.cpp b/src/libslic3r/PrintObject.cpp
-index 7e9b21cc..28e462bb 100644
+index 7e9b21cc..0fe30c11 100644
 --- a/src/libslic3r/PrintObject.cpp
 +++ b/src/libslic3r/PrintObject.cpp
-@@ -4740,10 +4740,26 @@ void PrintObject::combine_infill()
+@@ -1,5 +1,6 @@
+ #include "ExPolygon.hpp"
+ #include "Config.hpp"
++#include "IndxNozzle.hpp"
+ #include "Exception.hpp"
+ #include "Line.hpp"
+ #include "Flow.hpp"
+@@ -4347,7 +4348,16 @@ std::vector<unsigned int> PrintObject::object_extruders() const
+         region.collect_object_printing_extruders(*this->print(), extruders);
+ 
+     const ModelObject* mo = this->model_object();
++    const bool indx=this->print()->config().machine_start_gcode.value.find("INDX_PRINT_START")!=std::string::npos;
+     for (const ModelVolume* mv : mo->volumes) {
++        if(indx){
++            // Region assignments above already resolve object/part/height-range
++            // defaults. Retain painted filaments without reintroducing an
++            // overridden default filament into slicing parameters or the tower.
++            if(mv->is_model_part())for(size_t filament:mv->get_extruders_from_multi_material_painting())
++                extruders.push_back(static_cast<unsigned int>(filament));
++            continue;
++        }
+         std::vector<int> volume_extruders = mv->get_extruders();
+         for (int extruder : volume_extruders) {
+             assert(extruder > 0);
+@@ -4740,10 +4750,26 @@ void PrintObject::combine_infill()
          double nozzle_diameter = std::min(
              nozzle_diameter_for_filament(this->print()->config(), region.config().sparse_infill_filament_id.value, this->print()->is_BBL_printer()),
              nozzle_diameter_for_filament(this->print()->config(), region.config().internal_solid_filament_id.value, this->print()->is_BBL_printer()));
@@ -713,7 +994,7 @@ index 7e9b21cc..28e462bb 100644
          nozzle_diameter = infill_combination_max_layer_height > 0 ? std::min(infill_combination_max_layer_height, nozzle_diameter) : nozzle_diameter;
 +        if(indx){
 +            const double configured=print_config.max_layer_height.get_at(infill_tool);
-+            const double max_height=configured>0?configured:print_config.nozzle_diameter.get_at(infill_tool)*.75;
++            const double max_height=configured>0?configured:Indx::nozzle_layer_limit(print_config.nozzle_diameter.get_at(infill_tool));
 +            nozzle_diameter=std::min(nozzle_diameter,max_height);
 +        }
          
@@ -733,10 +1014,13 @@ index 367aadaa..74804eb9 100644
      GUI/Widgets/AnimaController.cpp
      Config/Snapshot.cpp
 diff --git a/src/slic3r/GUI/GCodeViewer.cpp b/src/slic3r/GUI/GCodeViewer.cpp
-index fbfd44a4..90670d1a 100644
+index fbfd44a4..df52f7e9 100644
 --- a/src/slic3r/GUI/GCodeViewer.cpp
 +++ b/src/slic3r/GUI/GCodeViewer.cpp
-@@ -3,6 +3,7 @@
+@@ -1,8 +1,10 @@
+ #include "libslic3r/libslic3r.h"
+ #include "GCodeViewer.hpp"
++#include "IndxSync.hpp"
  
  #include "libslic3r/BuildVolume.hpp"
  #include "libslic3r/Print.hpp"
@@ -744,7 +1028,7 @@ index fbfd44a4..90670d1a 100644
  #include "libslic3r/Geometry.hpp"
  #include "libslic3r/TriangleMesh.hpp"
  #include "libslic3r/Model.hpp"
-@@ -521,6 +522,17 @@ void GCodeViewer::SequentialView::Marker::render_position_window(const libvgcode
+@@ -521,6 +523,17 @@ void GCodeViewer::SequentialView::Marker::render_position_window(const libvgcode
              add_row(_u8L("Width"), buff);
              if (is_extrusion) sprintf(buff, ("%.3f " + _u8L("mm")).c_str(), vertex.height); else strcpy(buff, NA_CSTR);
              add_row(_u8L("Height"), buff);
@@ -762,12 +1046,41 @@ index fbfd44a4..90670d1a 100644
              // ORCA: Length of the move ending at the current vertex. Arc moves (G2/G3) are discretized
              // into several vertices sharing the same gcode line id, so accumulate the whole run to report
              // the arc length instead of the length of a single chord.
+@@ -5083,7 +5096,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
+         //BBS display filament change times
+         ImGui::Dummy({window_padding, window_padding});
+         ImGui::SameLine();
+-        imgui.text(_u8L("Filament change times") + ":");
++        imgui.text((is_indx_profile()?_u8L("Ricariche filamento"):_u8L("Filament change times")) + ":");
+         ImGui::SameLine();
+         imgui.text(format_compact_count(m_print_statistics.total_filament_changes));
+ 
+@@ -5107,6 +5120,19 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
+     default: { break; }
+     }
+ 
++    if(is_indx_profile()) {
++        ImGui::Dummy({window_padding,window_padding});ImGui::SameLine();
++        imgui.text(_u8L("Cambi tool effettivi")+":");ImGui::SameLine();
++        imgui.text(std::to_string(m_print_statistics.total_extruder_changes));
++        ImGui::Dummy({window_padding,window_padding});ImGui::SameLine();
++        imgui.text(_u8L("Tempo cambi tool (incluso)")+":");ImGui::SameLine();
++        imgui.text(get_time_dhms(m_print_statistics.total_tool_change_time));
++        if(m_print_statistics.total_extruder_changes>0) {
++            char change_duration[64];::sprintf(change_duration,"%.1f s / cambio",m_print_statistics.total_tool_change_time/m_print_statistics.total_extruder_changes);
++            ImGui::Dummy({window_padding,window_padding});ImGui::SameLine();imgui.text(change_duration);
++        }
++    }
++
+     // partial estimated printing time section
+     if (new_view_type == libvgcode::EViewType::ColorPrint) {
+         using Times = std::pair<float, float>;
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..07df82bb
+index 00000000..bd9bb984
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,1938 @@
+@@ -0,0 +1,2238 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -781,6 +1094,7 @@ index 00000000..07df82bb
 +#include "libslic3r/Print.hpp"
 +#include "libslic3r/Model.hpp"
 +#include "libslic3r/IndxChecks.hpp"
++#include "libslic3r/IndxNozzle.hpp"
 +#include "libslic3r/IndxPreview.hpp"
 +#include "libslic3r/Config.hpp"
 +#include "libslic3r/Color.hpp"
@@ -805,6 +1119,8 @@ index 00000000..07df82bb
 +#include <wx/choice.h>
 +#include <wx/sizer.h>
 +#include <wx/stattext.h>
++#include <wx/textwrapper.h>
++#include <wx/dcclient.h>
 +#include <wx/button.h>
 +#include <wx/dialog.h>
 +#include <wx/textctrl.h>
@@ -912,6 +1228,11 @@ index 00000000..07df82bb
 +    const auto* sizes=wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
 +    return sizes?sizes->values.size():0;
 +}
++std::string catalog_nozzle_type(double diameter,const std::string& previous) {
++    if(std::abs(diameter-.25)<.0001)return "standard";
++    for(double cht:{.5,.6,.8,1.})if(std::abs(diameter-cht)<.0001)return "cht";
++    return previous;
++}
 +Json nozzle_setup() {
 +    const auto& printer=wxGetApp().preset_bundle->printers.get_edited_preset();
 +    const auto* sizes=printer.config.option<ConfigOptionFloats>("nozzle_diameter");
@@ -923,12 +1244,17 @@ index 00000000..07df82bb
 +        const auto raw=wxGetApp().app_config->get("indx_nozzle_setup");
 +        if(!raw.empty()){saved=Json::parse(raw);all[printer.name]=saved;wxGetApp().app_config->set("indx_nozzle_setups",all.dump());}
 +    }
-+    Json tools=Json::array();
++    Json tools=Json::array();bool corrected_type=false;
 +    for(int t=0;t<int(tool_count());++t){
 +        const auto old=saved.is_array() && saved.size()>size_t(t)?saved[t]:Json::object();
-+        tools.push_back({{"tool",t},{"diameter",sizes && sizes->values.size()>size_t(t)?sizes->values[t]:.4},
-+            {"type",old.value("type",std::string("standard"))},{"cht_multiplier",old.value("cht_multiplier",1.3)}});
++        const double diameter=sizes && sizes->values.size()>size_t(t)?sizes->values[t]:.4;
++        const auto previous=old.value("type",std::string("standard"));const auto kind=catalog_nozzle_type(diameter,previous);
++        corrected_type=corrected_type || kind!=previous;
++        tools.push_back({{"tool",t},{"diameter",diameter},{"type",kind},{"cht_multiplier",old.value("cht_multiplier",1.3)}});
 +    }
++    // Migrate legacy impossible combinations in the profile metadata as well
++    // as the visible summary. No diameter, dock or printer firmware is changed.
++    if(corrected_type){all[printer.name]=tools;wxGetApp().app_config->set("indx_nozzle_setups",all.dump());wxGetApp().app_config->set("indx_nozzle_setup",tools.dump());}
 +    return tools;
 +}
 +std::string nozzle_key(int tool,const Json& nozzle) {
@@ -971,15 +1297,21 @@ index 00000000..07df82bb
 +        }
 +        maps=Indx::proposal_mapping(slots,tool_count(),maps,true);
 +    }
-+    maps.resize(bundle.filament_presets.size(),1);return maps;
++    maps.resize(bundle.filament_presets.size(),1);
++    if(!positional)if(const auto* inactive=bundle.project_config.option<ConfigOptionInts>("indx_unassigned_filaments"))
++        for(int f:inactive->values)if(f>0 && size_t(f)<=maps.size())maps[f-1]=0;
++    return maps;
 +}
 +void apply_sidebar_indx_mapping(const std::vector<int>& maps) {
 +    auto& bundle=*wxGetApp().preset_bundle;auto* p=wxGetApp().plater();
 +    p->take_snapshot("Mappatura tool INDX");
-+    bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(maps));
++    auto native=maps;std::vector<int> inactive;
++    for(size_t f=0;f<native.size();++f)if(native[f]<=0){inactive.push_back(int(f)+1);native[f]=1;}
++    bundle.project_config.set_key_value("indx_unassigned_filaments",new ConfigOptionInts(inactive));
++    bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(native));
 +    bundle.project_config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
 +    auto* plate=p->get_partplate_list().get_curr_plate();
-+    if(plate){plate->set_filament_map_mode(fmmManual);plate->set_filament_maps(maps);}
++    if(plate){plate->set_filament_map_mode(fmmManual);plate->set_filament_maps(native);}
 +    p->on_config_change(bundle.project_config);p->update();
 +}
 +std::string digest(const std::string& s) {
@@ -1185,19 +1517,15 @@ index 00000000..07df82bb
 +            config.set_key_value("filament_vendor",new ConfigOptionStrings({a.value("brand",std::string("Generic"))}));
 +            config.set_key_value("compatible_printers",new ConfigOptionStrings({bundle.printers.get_edited_preset().name}));
 +            config.set_deserialize_strict("compatible_printers_condition","");
-+            std::string summary="T"+key+": "+physical_name+" (PA da calibrare)";
-+            if(cal.contains("pa")){
-+                const double pa=cal.at("pa").get<double>();
-+                if(!std::isfinite(pa)||pa<0||pa>1)throw std::runtime_error(_u8L("PA non valido."));
-+                auto* opt=config.option<ConfigOptionFloats>("pressure_advance");size_t n=opt?std::max(size_t(1),opt->values.size()):1;
-+                config.set_key_value("pressure_advance",new ConfigOptionFloats(std::vector<double>(n,pa)));
-+                config.set_key_value("enable_pressure_advance",new ConfigOptionBools(std::vector<unsigned char>(n,1)));
-+                if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
-+                summary="T"+key+": "+physical_name+" - PA "+std::to_string(pa);
-+            } else {
-+                config.set_deserialize_strict("enable_pressure_advance","0");
-+                if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
-+            }
++            const auto* stock_pa=config.option<ConfigOptionFloats>("pressure_advance");
++            const double default_pa=a.value("pa",stock_pa && !stock_pa->values.empty()?stock_pa->values.front():0.);
++            const double pa=cal.value("pa",default_pa);
++            if(!std::isfinite(pa)||pa<0||pa>1)throw std::runtime_error(_u8L("PA non valido."));
++            const size_t n=stock_pa?std::max(size_t(1),stock_pa->values.size()):1;
++            config.set_key_value("pressure_advance",new ConfigOptionFloats(std::vector<double>(n,pa)));
++            config.set_key_value("enable_pressure_advance",new ConfigOptionBools(std::vector<unsigned char>(n,1)));
++            if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
++            std::string summary="T"+key+": "+physical_name+" - PA "+std::to_string(pa);
 +            for(const std::string kind:{"pa","flow","max_flow"}) {
 +                const auto state=states.at(kind).at("state");
 +                const auto label=state=="verified"?_u8L("verificato"):state=="stale"?_u8L("da rifare"):state=="estimated"?_u8L("stimato"):_u8L("da calibrare");
@@ -1355,7 +1683,7 @@ index 00000000..07df82bb
 +            const auto bed_key=get_bed_temp_key(bed->value);
 +            match=match && std::abs(number(bed_key.c_str(),0)-record.value("bed",0))<.1;
 +        }
-+        match=match && (cal.contains("pa")?(pa_on && std::abs(number("pressure_advance",-1)-cal.at("pa").get<double>())<.00001):!pa_on);
++        match=match && pa_on && std::abs(number("pressure_advance",-1)-cal.value("pa",record.value("pa",0.)))<.00001;
 +        const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
 +        match=match && colors && colors->get_at(filament)==record.value("color",std::string());
 +        slots.push_back({{"tool",tool},{"filament",filament},{"diameter",nozzle.at("diameter")},{"type",nozzle.at("type")},
@@ -1364,7 +1692,9 @@ index 00000000..07df82bb
 +    return Indx::preflight({{"slots",slots},{"tool_count",tool_count()}},remote);
 +}
 +
-+bool apply_nozzle_setup(const Json& next) {
++bool apply_nozzle_setup(const Json& requested) {
++    auto next=requested;
++    for(auto& tool:next)tool["type"]=catalog_nozzle_type(tool.at("diameter").get<double>(),tool.value("type",std::string("standard")));
 +    const auto previous=nozzle_setup();
 +    const size_t count=next.size();
 +    std::set<int> changed;
@@ -1374,7 +1704,7 @@ index 00000000..07df82bb
 +        for(int t=0;t<int(count);++t){
 +            const auto& n=next.at(t);
 +            if(size_t(t)>=previous.size() || n!=previous[t])changed.insert(t);sizes->values[t]=n.at("diameter").get<double>();
-+            if(auto* max=printer.config.option<ConfigOptionFloats>("max_layer_height")){if(max->values.size()>size_t(t))max->values[t]=sizes->values[t]*.7;}
++            if(auto* max=printer.config.option<ConfigOptionFloats>("max_layer_height")){if(max->values.size()>size_t(t))max->values[t]=Indx::nozzle_layer_limit(sizes->values[t]);}
 +            if(auto* min=printer.config.option<ConfigOptionFloats>("min_layer_height")){if(min->values.size()>size_t(t))min->values[t]=sizes->values[t]*.1;}
 +        }
 +        if(changed.empty() && count==previous.size())return false;
@@ -1411,7 +1741,7 @@ index 00000000..07df82bb
 +            const double base=speed && !speed->values.empty() && speed->values[0]>0?speed->values[0]:8.;
 +            const double estimate=generic?base*(next[t].at("type")=="cht"?next[t].at("cht_multiplier").get<double>():1.):std::min(base,8.);
 +            config.set_key_value("filament_max_volumetric_speed",new ConfigOptionFloats({std::min(100.,estimate)}));
-+            config.set_deserialize_strict("enable_pressure_advance","0");
++            config.set_deserialize_strict("enable_pressure_advance","1");
 +            if(config.has("adaptive_pressure_advance"))config.set_deserialize_strict("adaptive_pressure_advance","0");
 +            config.set_key_value("compatible_printers",new ConfigOptionStrings({printer_name}));config.set_deserialize_strict("compatible_printers_condition","");
 +            std::string label=wxString::FromUTF8(source_name).Left(32).ToUTF8().data();for(char& c:label)if(std::string("<>:\"/\\|?*").find(c)!=std::string::npos)c='_';
@@ -1441,7 +1771,7 @@ index 00000000..07df82bb
 +    maps.resize(wxGetApp().preset_bundle->filament_presets.size(),1);
 +    for(size_t f=0;f<maps.size();++f){
 +        if(f>=old_slots && f<next.size())maps[f]=int(f)+1;
-+        if(maps[f]<1 || size_t(maps[f])>next.size())maps[f]=1;
++        if(maps[f]<1 || size_t(maps[f])>next.size())maps[f]=manual_map?0:1;
 +    }
 +    set_manual_indx_mapping(manual_map);apply_sidebar_indx_mapping(maps);
 +    wxGetApp().app_config->save();
@@ -1464,8 +1794,14 @@ index 00000000..07df82bb
 +    for(const auto& e:entries)if(e.assigned){
 +        const auto* saved=bundle.filaments.find_preset(e.name,false);
 +        if(!saved || e.tool<0 || size_t(e.tool)>=tool_count())throw std::runtime_error(_u8L("Assegnazione INDX incompleta: aggiornamento rimandato."));
-+        bundle.filament_presets[e.tool]=saved->name;colors->values[e.tool]=e.color;
-+        multi->values[e.tool]=e.color;types->values[e.tool]="1";mixed->values[e.tool]=0;maps[e.tool]=e.tool+1;
++        size_t slot=size_t(e.tool);
++        if(manual_indx_mapping()) {
++            const auto assigned=sidebar_indx_mapping(false);
++            if(std::count(assigned.begin(),assigned.end(),e.tool+1)!=1)continue;
++            slot=size_t(std::find(assigned.begin(),assigned.end(),e.tool+1)-assigned.begin());
++        }
++        bundle.filament_presets[slot]=saved->name;colors->values[slot]=e.color;
++        multi->values[slot]=e.color;types->values[slot]="1";mixed->values[slot]=0;maps[slot]=e.tool+1;
 +    }
 +    bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(maps));bundle.project_config.set_deserialize_strict("filament_map_mode","Manual");
 +    auto* plate=wxGetApp().plater()->get_partplate_list().get_curr_plate();if(plate){plate->set_filament_maps(maps);plate->set_filament_map_mode(fmmManual);}
@@ -1479,10 +1815,10 @@ index 00000000..07df82bb
 +Json local_tool_filaments() {
 +    const auto& bundle=*wxGetApp().preset_bundle;
 +    const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
-+    const auto* maps=bundle.project_config.option<ConfigOptionInts>("filament_map");
++    const auto maps=sidebar_indx_mapping(false);
 +    Json result=Json::object();std::set<int> ambiguous;
 +    for(size_t f=0;f<bundle.filament_presets.size();++f) {
-+        const int tool=maps && f<maps->values.size()?maps->values[f]-1:int(f);
++        const int tool=f<maps.size()?maps[f]-1:int(f);
 +        if(tool<0 || size_t(tool)>=tool_count() || ambiguous.count(tool))continue;
 +        const auto* preset=bundle.filaments.find_preset(bundle.filament_presets[f],false);
 +        if(!preset)continue;
@@ -1603,6 +1939,54 @@ index 00000000..07df82bb
 +        button->SetBackgroundColour(bg);button->SetForegroundColour(fg);button->Refresh();
 +    }
 +}
++// Bondtech INDX Thin Passive Tools: Standard 0.25/0.40; CHT 0.40/0.50/0.60/0.80/1.00.
++// Keep the hidden numeric value for existing project compatibility, but expose
++// only catalog buttons. Loading a legacy custom value never silently changes it.
++wxWindow* indx_diameter_buttons(wxWindow* parent,wxSpinCtrlDouble* diameter,wxChoice* type) {
++    auto* panel=new wxPanel(parent);auto* box=new wxBoxSizer(wxVERTICAL);
++    auto* selected=new wxStaticText(panel,wxID_ANY,wxEmptyString);
++    box->Add(selected,0,wxBOTTOM,panel->FromDIP(5));
++    selected->Bind(wxEVT_UPDATE_UI,[selected,diameter](wxUpdateUIEvent&){
++        const auto text=wxString::Format(_L("Diametro: %.2f mm"),diameter->GetValue());
++        if(selected->GetLabel()!=text)selected->SetLabel(text);
++    });
++    auto* buttons=new wxGridSizer(0,3,panel->FromDIP(4),panel->FromDIP(4));
++    for(double value:{.25,.4,.5,.6,.8,1.}) {
++        auto* button=new wxToggleButton(panel,wxID_ANY,wxString::Format("%.2f",value),wxDefaultPosition,panel->FromDIP(wxSize(42,28)));
++        button->SetName(wxString::Format(_L("Diametro ugello %.2f mm"),value));
++        button->SetToolTip(value<.4?_L("Bondtech INDX Standard"):(value>.4?_L("Bondtech INDX CHT"):_L("Bondtech INDX Standard o CHT")));
++        buttons->Add(button,1,wxEXPAND);
++        button->Bind(wxEVT_TOGGLEBUTTON,[diameter,type,value](wxCommandEvent&){
++            diameter->SetValue(value);
++            if(value<.4)type->SetSelection(0);else if(value>.4)type->SetSelection(1);
++            wxSpinDoubleEvent changed(wxEVT_SPINCTRLDOUBLE,diameter->GetId());changed.SetEventObject(diameter);
++            diameter->GetEventHandler()->ProcessEvent(changed);
++        });
++        button->Bind(wxEVT_UPDATE_UI,[button,diameter,value](wxUpdateUIEvent&){
++            const bool active=std::abs(diameter->GetValue()-value)<.0001;
++            button->SetValue(active);button->Enable(diameter->IsEnabled());style_indx_mode(button,active);
++        });
++    }
++    box->Add(buttons,0,wxEXPAND);panel->SetSizerAndFit(box);diameter->Hide();return panel;
++}
++wxWindow* indx_nozzle_type_control(wxWindow* parent,wxSpinCtrlDouble* diameter,wxChoice* type) {
++    auto* panel=new wxPanel(parent);auto* box=new wxBoxSizer(wxVERTICAL);
++    type->Reparent(panel);auto* fixed=new wxStaticText(panel,wxID_ANY,wxEmptyString);fixed->Hide();
++    box->Add(type,0,wxEXPAND);box->Add(fixed,0,wxALL,panel->FromDIP(5));panel->SetSizerAndFit(box);
++    panel->Bind(wxEVT_UPDATE_UI,[panel,type,fixed,diameter](wxUpdateUIEvent&){
++        const double value=diameter->GetValue();const bool selectable=std::abs(value-.4)<.0001;
++        if(!selectable)type->SetSelection(value<.4?0:1);
++        fixed->SetLabel(type->GetSelection()==1?wxString("CHT"):_L("Standard"));
++        if(type->IsShown()!=selectable){type->Show(selectable);fixed->Show(!selectable);panel->Layout();panel->GetParent()->Layout();}
++    });
++    return panel;
++}
++void normalize_indx_nozzle_type(wxSpinCtrlDouble* diameter,wxChoice* type) {
++    const double value=diameter->GetValue();
++    const bool standard=type->GetSelection()==0;
++    if((standard && std::abs(value-.25)>.0001 && std::abs(value-.4)>.0001) ||
++       (!standard && std::abs(value-.4)>.0001 && std::abs(value-.5)>.0001 && std::abs(value-.6)>.0001 && std::abs(value-.8)>.0001 && std::abs(value-1.)>.0001))diameter->SetValue(.4);
++}
 +}
 +wxWindow* create_indx_nozzle_controls(wxWindow* parent) {
 +    auto* panel=new wxPanel(parent);auto* box=new wxBoxSizer(wxVERTICAL);
@@ -1633,8 +2017,8 @@ index 00000000..07df82bb
 +    add->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(1);});remove->Bind(wxEVT_BUTTON,[resize](wxCommandEvent&){resize(-1);});
 +    box->Add(header,0,wxEXPAND|wxBOTTOM,panel->FromDIP(7));
 +    box->Add(modes,0,wxEXPAND|wxBOTTOM,panel->FromDIP(8));
-+    auto* rows_panel=new wxPanel(panel);auto* grid=new wxFlexGridSizer(2,panel->FromDIP(8),panel->FromDIP(8));
-+    grid->AddGrowableCol(0);grid->AddGrowableCol(1);rows_panel->SetSizer(grid);
++    auto* rows_panel=new wxPanel(panel);auto* grid=new wxGridSizer(0,2,panel->FromDIP(4),panel->FromDIP(6));
++    rows_panel->SetSizer(grid);
 +    box->Add(rows_panel,0,wxEXPAND);
 +    auto* status=new wxStaticText(panel,wxID_ANY,_L("Automatico: ugelli da KlipperScreen"));status->SetFont(status->GetFont().Smaller());
 +    box->Add(status,0,wxTOP|wxBOTTOM,panel->FromDIP(7));
@@ -1654,8 +2038,7 @@ index 00000000..07df82bb
 +            wxGetApp().app_config->save();
 +        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,panel);}
 +    });
-+    struct Row {wxSpinCtrlDouble* diameter;wxChoice* type;std::string displayed_type;};
-+    auto rows=std::make_shared<std::vector<Row>>();
++    auto rows=std::make_shared<std::vector<wxButton*>>();
 +    const wxWeakRef<wxWindow> weak=panel;
 +    panel->Bind(wxEVT_UPDATE_UI,[panel,title,automatic,manual,remove,add,rows_panel,grid,rows,status,weak](wxUpdateUIEvent&){
 +        if(!is_indx_profile())return;
@@ -1669,54 +2052,30 @@ index 00000000..07df82bb
 +        if(rows->size()!=tools.size()){
 +            grid->Clear(true);rows->clear();
 +            for(size_t t=0;t<tools.size();++t){
-+                auto* cell=new IndxSidebarCard(rows_panel);auto* content=new wxBoxSizer(wxVERTICAL);
-+                auto* badge=new wxStaticText(cell,wxID_ANY,wxString::Format("T%zu",t));
-+                auto badge_font=badge->GetFont();badge_font.SetWeight(wxFONTWEIGHT_BOLD);badge->SetFont(badge_font);
-+                badge->SetForegroundColour(wxColour(24,119,105));
-+                content->Add(badge,0,wxLEFT|wxRIGHT|wxTOP,cell->FromDIP(9));
-+                auto* line=new wxBoxSizer(wxHORIZONTAL);
-+                auto* diameter=new wxSpinCtrlDouble(cell,wxID_ANY,wxEmptyString,wxDefaultPosition,cell->FromDIP(wxSize(64,28)),wxSP_ARROW_KEYS|wxTE_PROCESS_ENTER,.1,2.,.4,.05);
-+                diameter->SetDigits(2);diameter->SetName(wxString::Format(_L("Diametro ugello T%zu (mm)"),t));
-+                auto* type=new wxChoice(cell,wxID_ANY,wxDefaultPosition,cell->FromDIP(wxSize(82,28)));type->Append(_L("Standard"));type->Append("CHT");
-+                type->SetName(wxString::Format(_L("Tipo ugello T%zu"),t));
-+                diameter->SetToolTip(_L("Diametro reale dell'ugello in millimetri"));
-+                line->Add(diameter,1,wxRIGHT,cell->FromDIP(4));
-+                line->Add(new wxStaticText(cell,wxID_ANY,"mm"),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,cell->FromDIP(6));
-+                line->Add(type,1);
-+                content->Add(line,0,wxEXPAND|wxALL,cell->FromDIP(9));
-+                cell->SetSizerAndFit(content);grid->Add(cell,1,wxEXPAND);
-+                rows->push_back({diameter,type,{}});
-+                auto queued=std::make_shared<bool>(false);
-+                auto commit=[weak,diameter,type,t,queued,rows](){
-+                    if(!weak || *queued || !manual_indx_nozzles())return;
-+                    const auto current=nozzle_setup();if(t>=current.size())return;
-+                    double value=0.;const auto entered=diameter->GetTextValue();
-+                    if(!entered.ToDouble(&value) && !entered.ToCDouble(&value))return;
-+                    const std::string kind=type->GetSelection()==1?"cht":"standard";
-+                    if(std::abs(value-current[t].at("diameter").get<double>())<.0001 && kind==current[t].at("type").get<std::string>())return;
-+                    *queued=true;const auto printer=wxGetApp().preset_bundle->printers.get_edited_preset().name;
-+                    weak->CallAfter([weak,t,value,kind,queued,printer,rows](){
-+                        *queued=false;
-+                        if(t<rows->size())rows->at(t).displayed_type.clear();
-+                        if(!weak || !manual_indx_nozzles() || wxGetApp().plater()->is_background_process_slicing() || printer!=wxGetApp().preset_bundle->printers.get_edited_preset().name)return;
-+                        try {
-+                            if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
-+                            auto next=nozzle_setup();if(t>=next.size() || !std::isfinite(value) || value<.1 || value>2.)return;
-+                            next[t]["diameter"]=value;next[t]["type"]=kind;
-+                            apply_manual_nozzle_setup(next);
-+                        }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,weak.get());}
-+                    });
-+                };
-+                diameter->Bind(wxEVT_SPINCTRLDOUBLE,[commit](wxSpinDoubleEvent&){commit();});
-+                diameter->Bind(wxEVT_TEXT_ENTER,[commit](wxCommandEvent&){commit();});
-+                auto confirm=[commit,type](wxKeyEvent& e){
-+                    if(e.GetKeyCode()==WXK_RETURN || e.GetKeyCode()==WXK_NUMPAD_ENTER){commit();type->SetFocus();}
-+                    else e.Skip();
-+                };
-+                diameter->Bind(wxEVT_CHAR_HOOK,confirm);
-+                for(auto* child:diameter->GetChildren())child->Bind(wxEVT_CHAR_HOOK,confirm);
-+                diameter->Bind(wxEVT_KILL_FOCUS,[commit](wxFocusEvent& e){commit();e.Skip();});
-+                type->Bind(wxEVT_CHOICE,[commit](wxCommandEvent&){commit();});
++                auto* button=new wxButton(rows_panel,wxID_ANY,wxEmptyString,wxDefaultPosition,rows_panel->FromDIP(wxSize(120,28)));
++                button->SetToolTip(_L("Apri il tool per scegliere diametro e tipo di ugello."));
++                grid->Add(button,1,wxEXPAND);rows->push_back(button);
++                button->Bind(wxEVT_BUTTON,[weak,t](wxCommandEvent&){
++                    if(!weak || !manual_indx_nozzles() || wxGetApp().plater()->is_background_process_slicing() || foreground_sync)return;
++                    try {
++                        const auto current=nozzle_setup();if(t>=current.size())return;
++                        const auto printer=wxGetApp().preset_bundle->printers.get_edited_preset().name;
++                        wxDialog dialog(weak,wxID_ANY,wxString::Format(_L("Ugello T%zu"),t));auto* layout=new wxBoxSizer(wxVERTICAL);
++                        auto* diameter=new wxSpinCtrlDouble(&dialog,wxID_ANY,wxEmptyString,wxDefaultPosition,wxDefaultSize,wxSP_ARROW_KEYS,.1,2.,current[t].at("diameter").get<double>(),.05);
++                        diameter->SetDigits(2);
++                        auto* type=new wxChoice(&dialog,wxID_ANY);type->Append(_L("Standard"));type->Append("CHT");type->SetSelection(current[t].at("type")=="cht"?1:0);
++                        layout->Add(indx_diameter_buttons(&dialog,diameter,type),0,wxEXPAND|wxALL,dialog.FromDIP(12));
++                        layout->Add(indx_nozzle_type_control(&dialog,diameter,type),0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,dialog.FromDIP(12));
++                        layout->Add(dialog.CreateSeparatedButtonSizer(wxOK|wxCANCEL),0,wxEXPAND|wxALL,dialog.FromDIP(12));dialog.SetSizerAndFit(layout);dialog.SetMinSize(dialog.FromDIP(wxSize(260,-1)));
++                        if(dialog.ShowModal()!=wxID_OK)return;
++                        if(!weak || printer!=wxGetApp().preset_bundle->printers.get_edited_preset().name || wxGetApp().plater()->is_background_process_slicing() || foreground_sync)return;
++                        const double value=diameter->GetValue();const std::string kind=std::abs(value-.4)<.0001?(type->GetSelection()==1?"cht":"standard"):(value<.4?"standard":"cht");
++                        if(std::abs(value-current[t].at("diameter").get<double>())<.0001 && kind==current[t].at("type").get<std::string>())return;
++                        if(!wxGetApp().check_and_save_current_preset_changes(_L("Ugelli INDX"),_L("Salva le modifiche ai profili prima di cambiare gli ugelli."),false))return;
++                        auto next=nozzle_setup();if(t>=next.size())return;
++                        next[t]["diameter"]=value;next[t]["type"]=kind;apply_manual_nozzle_setup(next);
++                    }catch(const std::exception& e){wxMessageBox(wxString::FromUTF8(e.what()),_L("Ugelli INDX"),wxOK|wxICON_ERROR,weak.get());}
++                });
 +            }
 +            wxGetApp().UpdateDarkUIWin(rows_panel);
 +            // The panel is inserted before its dynamic tool rows exist. Refresh
@@ -1728,12 +2087,10 @@ index 00000000..07df82bb
 +            }
 +        }
 +        for(size_t t=0;t<rows->size();++t){
-+            auto& row=rows->at(t);auto* focus=wxWindow::FindFocus();
-+            if(focus!=row.diameter && (!focus || !row.diameter->IsDescendant(focus)))row.diameter->SetValue(tools[t].at("diameter").get<double>());
-+            const auto kind=tools[t].at("type").get<std::string>();
-+            // Do not reset the native choice while its dropdown is open.
-+            if(row.displayed_type!=kind){row.type->SetSelection(kind=="cht"?1:0);row.displayed_type=kind;}
-+            row.diameter->Enable(editing && enabled);row.type->Enable(editing && enabled);
++            const auto& tool=tools[t];auto* button=rows->at(t);
++            const auto label=wxString::Format("T%zu  %.2f mm | %s",t,tool.at("diameter").get<double>(),tool.at("type")=="cht"?wxString("CHT"):_L("Standard"));
++            if(button->GetLabel()!=label)button->SetLabel(label);
++            button->Enable(editing && enabled);
 +        }
 +        const auto source=editing?_L("Modifiche locali al profilo Orca"):_L("Configurazione ricevuta da KlipperScreen");
 +        if(status->GetLabel()!=source)status->SetLabel(source);
@@ -1774,13 +2131,13 @@ index 00000000..07df82bb
 +    panel->Bind(wxEVT_UPDATE_UI,[panel,choice,filament_index,signature](wxUpdateUIEvent&){
 +        const bool visible=is_indx_profile();if(panel->IsShown()!=visible){panel->Show(visible);panel->GetParent()->Layout();}if(!visible)return;
 +        const auto tools=nozzle_setup();const auto maps=sidebar_indx_mapping(!manual_indx_mapping());const auto key=tools.dump()+Json(maps).dump();
-+        if(*signature!=key){*signature=key;choice->Clear();for(const auto& t:tools)choice->Append(wxString::Format(_L("T%d · %.2f mm"),t.at("tool").get<int>(),t.at("diameter").get<double>()));
-+            choice->SetSelection(filament_index<int(maps.size()) && maps[filament_index]>0 && maps[filament_index]<=int(tools.size())?maps[filament_index]-1:wxNOT_FOUND);}
++        if(*signature!=key){*signature=key;choice->Clear();choice->Append(_L("Non assegnato"));for(const auto& t:tools)choice->Append(wxString::Format(_L("T%d · %.2f mm"),t.at("tool").get<int>(),t.at("diameter").get<double>()));
++            choice->SetSelection(filament_index<int(maps.size()) && maps[filament_index]>0 && maps[filament_index]<=int(tools.size())?maps[filament_index]:0);}
 +        choice->Enable(manual_indx_mapping() && !wxGetApp().plater()->is_background_process_slicing());
 +    });
 +    choice->Bind(wxEVT_CHOICE,[choice,filament_index](wxCommandEvent&){
 +        if(!manual_indx_mapping() || choice->GetSelection()<0)return;auto maps=sidebar_indx_mapping(false);
-+        if(filament_index>=int(maps.size()))return;maps[filament_index]=choice->GetSelection()+1;apply_sidebar_indx_mapping(maps);
++        if(filament_index>=int(maps.size()))return;apply_sidebar_indx_mapping(Indx::claim_tool(std::move(maps),size_t(filament_index),choice->GetSelection()));
 +    });
 +    wxGetApp().UpdateDarkUIWin(panel);return panel;
 +}
@@ -1794,10 +2151,98 @@ index 00000000..07df82bb
 +        wxGetApp().app_config->set("indx_preflight_report",project_check(print,remote).dump());
 +    }catch(const std::exception& e){BOOST_LOG_TRIVIAL(error)<<"INDX check: "<<e.what();}
 +}
-+bool suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output,int infill_filament,Json* material_plan,int primary_filament) {
++// Measure the explicitly wrapped text with the control font. GetLabelText()
++// preserves the unwrapped source and GetCharHeight() can omit line spacing.
++static void fit_indx_wrapped_label(wxStaticText* label,int width) {
++    struct WrappedText:wxTextWrapper {
++        wxString text;
++        void OnOutputLine(const wxString& line)override{text+=line;}
++        void OnNewLine()override{text+='\n';}
++    } wrapped;
++    wrapped.Wrap(label,label->GetLabel(),width);
++    wxClientDC dc(label);dc.SetFont(label->GetFont());
++    wxCoord measured_width=0,height=0;
++    dc.GetMultiLineTextExtent(wrapped.text,&measured_width,&height);
++    label->Wrap(width);
++    label->SetMinSize(wxSize(0,height+10));
++}
++
++static int indx_slice_purpose() {
++    try{return std::clamp(std::stoi(wxGetApp().app_config->get("indx_slice_purpose")),0,3);}
++    catch(const std::exception&){return 0;}
++}
++static wxString indx_purpose_name(int purpose) {
++    switch(purpose){case 1:return _L("Finitura e dettagli");case 2:return _L("Pezzo sollecitato");case 3:return _L("Minor tempo possibile");default:return _L("Uso quotidiano");}
++}
++static wxString indx_purpose_summary(int purpose) {
++    const auto settings=Indx::purpose_settings(purpose);
++    return wxString::Format(_L("%s: %d pareti · riempimento Gyroid %.0f%% · copertura superiore almeno %d layer / %.1f mm · inferiore almeno %d layer / %.1f mm. L'altezza layer si adatta alla modalità e agli ugelli usati."),indx_purpose_name(purpose),settings.walls,settings.infill,settings.top_layers,settings.top_thickness,settings.bottom_layers,settings.bottom_thickness);
++}
++// Profile metadata carries verified mechanics without assuming the SV08 grid
++// for another printer. Normal slicing never reads this automatic-search setting.
++static double indx_z_step(const PrintConfig& config) {
++    const auto* notes=wxGetApp().preset_bundle->printers.get_edited_preset().config.option<ConfigOptionString>("printer_notes");
++    return Indx::z_step_from_notes(notes?notes->value:config.printer_notes.value);
++}
++static void use_indx_purpose(DynamicPrintConfig& config,const PrintConfig& full,const Json& roles,int style,double layer_override=0.) {
++    const auto settings=Indx::purpose_settings(indx_slice_purpose());
++    const char* fields[]={"wall_loops","top_shell_layers","bottom_shell_layers","top_shell_thickness","bottom_shell_thickness","sparse_infill_density","sparse_infill_pattern","layer_height","initial_layer_print_height"};
++    // Do not silently report global purpose settings when local edits win.
++    for(const auto* object:wxGetApp().plater()->model().objects){
++        if(object->layer_height_profile.get().size()>4)throw std::runtime_error(_u8L("Rimuovi l'altezza layer variabile prima di usare i profili automatici INDX."));
++        for(const char* field:fields){
++            if(object->config.has(field))throw std::runtime_error(_u8L("Il modello contiene impostazioni locali di struttura o altezza layer: rimuovile prima di applicare l'uso automatico del pezzo."));
++            for(const auto* volume:object->volumes)if(volume->config.has(field))throw std::runtime_error(_u8L("Una parte contiene impostazioni locali di struttura o altezza layer."));
++            for(const auto& range:object->layer_config_ranges)if(range.second.has(field))throw std::runtime_error(_u8L("Un intervallo di altezza contiene impostazioni locali di struttura o layer."));
++        }
++    }
++    config.set_key_value("wall_loops",new ConfigOptionInt(settings.walls));
++    config.set_key_value("top_shell_layers",new ConfigOptionInt(settings.top_layers));
++    config.set_key_value("bottom_shell_layers",new ConfigOptionInt(settings.bottom_layers));
++    config.set_key_value("top_shell_thickness",new ConfigOptionFloat(settings.top_thickness));
++    config.set_key_value("bottom_shell_thickness",new ConfigOptionFloat(settings.bottom_thickness));
++    config.set_key_value("sparse_infill_density",new ConfigOptionPercent(settings.infill));
++    config.set_deserialize_strict("sparse_infill_pattern","gyroid");
++    double lower=.001,upper=std::numeric_limits<double>::max();
++    for(const std::string role:{"wall","solid","infill"}){
++        const auto& r=roles.at(role);const size_t tool=r.at("tool").get<size_t>();const double d=r.at("diameter").get<double>();
++        const double min_config=full.min_layer_height.get_at(tool),max_config=full.max_layer_height.get_at(tool);
++        lower=std::max(lower,min_config>0.?min_config:d*.1);
++        upper=std::min(upper,std::min(Indx::nozzle_layer_limit(d),max_config>0.?max_config:Indx::nozzle_layer_limit(d)));
++    }
++    const double visible=std::min(roles.at("wall").at("diameter").get<double>(),roles.at("solid").at("diameter").get<double>());
++    const double requested=Indx::purpose_layer_height(style,indx_slice_purpose(),visible,lower,upper,indx_z_step(full));
++    const double height=layer_override>0.?Indx::align_z_height(layer_override,lower,std::min(upper,requested),indx_z_step(full)):requested;
++    config.set_key_value("top_shell_layers",new ConfigOptionInt(Indx::purpose_shell_layers(settings.top_layers,settings.top_thickness,height)));
++    config.set_key_value("bottom_shell_layers",new ConfigOptionInt(Indx::purpose_shell_layers(settings.bottom_layers,settings.bottom_thickness,height)));
++    config.set_key_value("layer_height",new ConfigOptionFloat(height));
++    config.set_key_value("initial_layer_print_height",new ConfigOptionFloat(Indx::align_z_height(std::min(height,.25),lower,upper,indx_z_step(full))));
++}
++
++static void use_indx_nozzle_line_widths(DynamicPrintConfig& config) {
++    // Each role resolves this percentage against its own assigned nozzle.
++    // Fixed 0.4-nozzle widths otherwise survive a multi-diameter role change.
++    for(const char* key:{"line_width","initial_layer_line_width","outer_wall_line_width","inner_wall_line_width","sparse_infill_line_width","internal_solid_infill_line_width","top_surface_line_width"})
++        if(config.has(key))config.set_key_value(key,new ConfigOptionFloatOrPercent(100.,true));
++}
++
++// Keep tower layers on the same Z grid as the model. Infill combination only
++// combines paths inside the model; it must not compact the tower's own layers.
++static void use_indx_tower_layers(DynamicPrintConfig& config) {
++    config.set_key_value("precise_z_height",new ConfigOptionBool(false));
++    config.set_key_value("wipe_tower_no_sparse_layers",new ConfigOptionBool(false));
++    config.set_key_value("wipe_tower_sparse_layers_combination",new ConfigOptionBool(false));
++    for(auto* object:wxGetApp().plater()->model().objects) {
++        if(object->config.has("precise_z_height"))object->config.set_key_value("precise_z_height",new ConfigOptionBool(false));
++        for(auto* volume:object->volumes)if(volume->config.has("precise_z_height"))volume->config.set_key_value("precise_z_height",new ConfigOptionBool(false));
++        for(auto& range:object->layer_config_ranges)if(range.second.has("precise_z_height"))range.second.set_key_value("precise_z_height",new ConfigOptionBool(false));
++    }
++}
++
++static bool suggest_indx_tools_impl(wxWindow* parent,const Print& print,int style,wxTextCtrl* output,int infill_filament,Json* material_plan,int primary_filament,double layer_override,const Json* role_override=nullptr) {
 +    if(!is_indx_printer())return false;
 +    try {
-+        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti fino a 0,6 mm, infill con ugello maggiore"));labels.Add(_L("Veloce: ugello maggiore per pareti, superfici e infill"));
++        wxArrayString labels;labels.Add(_L("Dettaglio: pareti e superfici fini, infill con ugello maggiore"));labels.Add(_L("Equilibrato: pareti e riempimento fino a 0,6 mm"));labels.Add(_L("Veloce: ugello maggiore del colore scelto per le parti visibili; infill con ugello maggiore dello stesso materiale"));
 +        wxSingleChoiceDialog choice(parent,_L("La proposta riguarda pareti, superfici e infill. Supporti e pittura mantengono le assegnazioni esistenti. Tempi e cambi effettivi sono disponibili dopo lo slicing."),_L("Proposta tool INDX"),labels);
 +        choice.SetSelection(1);if(style<0){if(choice.ShowModal()!=wxID_OK)return false;style=choice.GetSelection();}
 +        auto& bundle=*wxGetApp().preset_bundle;
@@ -1814,7 +2259,9 @@ index 00000000..07df82bb
 +            !manual_indx_mapping(),manual_indx_mapping());
 +        const bool remap=proposal_maps!=config.filament_map.values;
 +        config.filament_map.values=proposal_maps;
++        const auto assigned_maps=sidebar_indx_mapping(!manual_indx_mapping());
 +        for(size_t f=0;f<bundle.filament_presets.size();++f) {
++            if(manual_indx_mapping() && f<assigned_maps.size() && assigned_maps[f]<=0)continue;
 +            const size_t tool=get_extruder_index(config,unsigned(f));if(tool>=tool_count())continue;
 +            const auto* supports=config.option<ConfigOptionBools>("filament_is_support");
 +            const auto* temps=config.option<ConfigOptionInts>("nozzle_temperature");
@@ -1832,8 +2279,10 @@ index 00000000..07df82bb
 +            roles=plan.at("roles");
 +        }
 +        catch(const std::invalid_argument& e){
-+            if(std::string(e.what())=="detail_no_fine_filament" || std::string(e.what())=="fine_tool_unassigned")
-+                throw std::runtime_error(_u8L("Manca un filamento associato all'ugello fine. Per Dettaglio le pareti richiedono 0,4 mm o meno: sincronizza i filamenti e associa il materiale al tool corretto. Un ugello da 0,6 mm non viene proposto al suo posto. Se e montato uno 0,2 mm, associa anche quel tool per usarlo."));
++            if(std::string(e.what())=="detail_no_fine_filament")
++                throw std::runtime_error(_u8L("Dettaglio non disponibile: il colore selezionato non è disponibile su un ugello da 0,4 mm o inferiore con lo stesso materiale. Per questo colore non è possibile eseguire lo slicing Dettaglio."));
++            if(std::string(e.what())=="fine_tool_unassigned")
++                throw std::runtime_error(_u8L("Dettaglio non disponibile: il filamento dell'ugello fine non è associato a un tool. Controlla la mappatura dei filamenti."));
 +            throw std::runtime_error(_u8L("Manca un materiale valido per le pareti. Controlla il filamento assegnato alle pareti e la mappatura dei tool."));
 +        }
 +        if(material_plan)*material_plan=plan;
@@ -1842,6 +2291,42 @@ index 00000000..07df82bb
 +        bool matched=infill_filament==0;
 +        for(const auto& c:plan.at("alternatives"))if(c.at("filament")==infill_filament){roles["infill"]=c;matched=true;}
 +        if(!matched)throw std::runtime_error(_u8L("Il materiale alternativo non e piu disponibile. Ricalcola il confronto."));
++        const auto* assigned_primary=config.option<ConfigOptionInt>("outer_wall_filament_id");
++        const int selected_primary=primary_filament>0?primary_filament:assigned_primary && assigned_primary->value>0?assigned_primary->value:1;
++        const auto combinations=Indx::role_combinations(candidates,style==0?"detail":style==1?"balanced":"speed",selected_primary,infill_filament);
++        if(role_override){
++            if(std::find(combinations.begin(),combinations.end(),*role_override)==combinations.end())
++                throw std::runtime_error(_u8L("La combinazione di tool non è più disponibile. Riapri il confronto."));
++            roles=*role_override;
++        }
++        if(material_plan && layer_override<=0. && !role_override){
++            Json trials=Json::array();
++            auto add_roles=[&](const Json& trial_roles){
++                double lower=.001,upper=std::numeric_limits<double>::max();
++                for(const std::string role:{"wall","solid","infill"}){
++                    const auto& c=trial_roles.at(role);const size_t t=c.at("tool").get<size_t>();const double d=c.at("diameter").get<double>();
++                    lower=std::max(lower,config.min_layer_height.get_at(t)>0.?config.min_layer_height.get_at(t):d*.1);
++                    const double max=config.max_layer_height.get_at(t);
++                    upper=std::min(upper,std::min(Indx::nozzle_layer_limit(d),max>0.?max:Indx::nozzle_layer_limit(d)));
++                }
++                if(lower>upper)return;
++                const double visible=std::min(trial_roles.at("wall").at("diameter").get<double>(),trial_roles.at("solid").at("diameter").get<double>());
++                const double step=indx_z_step(config);
++                const double base=Indx::purpose_layer_height(style,indx_slice_purpose(),visible,lower,upper,step);
++                const auto& fill=trial_roles.at("infill");const size_t tool=fill.at("tool").get<size_t>();const double diameter=fill.at("diameter").get<double>();
++                const double configured=config.max_layer_height.get_at(tool);
++                double infill_cap=std::min(Indx::nozzle_layer_limit(diameter),configured>0.?configured:Indx::nozzle_layer_limit(diameter));
++                // Auto mode enables infill combination up to each nozzle's own
++                // configured limit; normal/manual slicing keeps user constraints.
++                for(double h:Indx::layer_height_candidates(base,lower,infill_cap,trial_roles.at("wall").at("tool")!=fill.at("tool"),step,visible*.5)){
++                    Json trial={{"height",h},{"roles",trial_roles}};
++                    if(std::find(trials.begin(),trials.end(),trial)==trials.end())trials.push_back(std::move(trial));
++                }
++            };
++            add_roles(roles);for(const auto& combination:combinations)add_roles(combination);
++            (*material_plan)["z_trials"]=std::move(trials);
++        }
++
 +        const char* fields[]={"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"};
 +        for(const auto* object:wxGetApp().plater()->model().objects) {
 +            for(const auto* field:fields) {
@@ -1857,12 +2342,16 @@ index 00000000..07df82bb
 +            const auto& r=roles.at(role);
 +            summary+=wxString::Format(_L("%s: filamento %d, T%d, ugello %.2f mm\n"),role_labels[index++],r.at("filament").get<int>(),r.at("tool").get<int>(),r.at("diameter").get<double>());
 +        }
++        summary+="\n"+_L("Torre di spurgo su layer comuni: altezza Z precisa e combinazione dei layer della torre disattivate.\n");
 +        summary+="\n"+_L("L'altezza comune si adatta ai tool effettivamente usati dopo l'applicazione. La combinazione infill viene attivata; la geometria determina dove puo essere applicata. Non e una previsione di risparmio di tempo.");
 +        if(!output && wxMessageBox(summary,_L("Applica proposta tool INDX"),wxYES_NO|wxICON_QUESTION,parent)!=wxYES)return false;
 +        if(!wxGetApp().check_and_save_current_preset_changes(_L("Proposta tool INDX"),_L("Salva le modifiche ai profili prima di applicare la proposta."),false))return false;
 +        Preset process=bundle.prints.get_edited_preset();
 +        const std::string keys[]={"wall","wall","solid","solid","solid","infill"};
 +        for(int i=0;i<6;++i)process.config.set_key_value(fields[i],new ConfigOptionInt(roles.at(keys[i]).at("filament").get<int>()));
++        use_indx_purpose(process.config,config,roles,style,layer_override);
++        use_indx_nozzle_line_widths(process.config);
++        use_indx_tower_layers(process.config);
 +        process.config.set_key_value("infill_combination",new ConfigOptionBool(true));
 +        const bool changed=!process.config.diff(bundle.prints.get_edited_preset().config).empty();
 +        // Automatic comparison variants belong to this project. Reuse one slot
@@ -1889,6 +2378,9 @@ index 00000000..07df82bb
 +        if(output)output->SetValue(summary);
 +        return true;
 +    }catch(const std::exception& e){if(output)output->SetValue(wxString::FromUTF8(e.what()));else wxMessageBox(wxString::FromUTF8(e.what()),_L("Proposta tool INDX"),wxOK|wxICON_INFORMATION,parent);return false;}
++}
++bool suggest_indx_tools(wxWindow* parent,const Print& print,int style,wxTextCtrl* output,int infill_filament,Json* material_plan,int primary_filament) {
++    return suggest_indx_tools_impl(parent,print,style,output,infill_filament,material_plan,primary_filament,0.);
 +}
 +bool check_indx_printer(wxWindow* parent,const Print& print,bool sending,const std::string& target,wxTextCtrl* output) {
 +    if(!is_indx_printer())return true;
@@ -1974,7 +2466,7 @@ index 00000000..07df82bb
 +        const long requested=wxGetNumberFromUser(_L("Numero di tool INDX configurati. Non modifica dock o firmware. Riducendo il numero, riassegna eventuali funzioni che usano tool rimossi."),_L("Tool"),_L("Ugelli INDX"),long(tool_count()),1,long(MAXIMUM_EXTRUDER_NUMBER),parent);
 +        if(requested<1)return;
 +        const size_t count=size_t(requested);
-+        wxDialog dialog(parent,wxID_ANY,_L("Ugelli INDX - diametri liberi e Standard / CHT"));
++        wxDialog dialog(parent,wxID_ANY,_L("Ugelli INDX - diametri Bondtech e Standard / CHT"));
 +        auto* layout=new wxBoxSizer(wxVERTICAL);
 +        auto* scroll=new wxScrolledWindow(&dialog,wxID_ANY,wxDefaultPosition,wxSize(760,400));scroll->SetScrollRate(0,15);
 +        auto* grid=new wxFlexGridSizer(5,10,12);
@@ -1984,14 +2476,15 @@ index 00000000..07df82bb
 +            const auto n=size_t(t)<previous.size()?previous[t]:Json{{"diameter",.4},{"type","standard"},{"cht_multiplier",1.3}};
 +            grid->Add(new wxStaticText(scroll,wxID_ANY,wxString::Format("T%d",t)),0,wxALIGN_CENTER_VERTICAL);
 +            auto* diameter=new wxSpinCtrlDouble(scroll,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(110,-1),wxSP_ARROW_KEYS,.1,2.,n.at("diameter").get<double>(),.01);
-+            diameter->SetDigits(2);grid->Add(diameter);diameters.push_back(diameter);
-+            auto* type=new wxChoice(scroll,wxID_ANY);type->Append(_L("Standard"));type->Append("CHT");type->SetSelection(n.at("type")=="cht"?1:0);grid->Add(type);types.push_back(type);
++            diameter->SetDigits(2);diameters.push_back(diameter);
++            auto* type=new wxChoice(scroll,wxID_ANY);type->Append(_L("Standard"));type->Append("CHT");type->SetSelection(n.at("type")=="cht"?1:0);grid->Add(indx_diameter_buttons(scroll,diameter,type));grid->Add(indx_nozzle_type_control(scroll,diameter,type));types.push_back(type);
++            type->Bind(wxEVT_CHOICE,[diameter,type](wxCommandEvent&){normalize_indx_nozzle_type(diameter,type);});
 +            auto* factor=new wxSpinCtrlDouble(scroll,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(110,-1),wxSP_ARROW_KEYS,1.,3.,n.at("cht_multiplier").get<double>(),.05);
 +            factor->SetDigits(2);grid->Add(factor);factors.push_back(factor);
 +            grid->Add(new wxStaticText(scroll,wxID_ANY,_L("Base x fattore; da calibrare")),0,wxALIGN_CENTER_VERTICAL);
 +        }
 +        scroll->SetSizer(grid);scroll->FitInside();scroll->SetMinSize(wxSize(760,320));layout->Add(scroll,1,wxEXPAND|wxALL,16);
-+        auto* note=new wxStaticText(&dialog,wxID_ANY,_L("Ogni tool accetta un diametro indipendente (0,10-2,00 mm). CHT aumenta solo le stime dei profili generici.\nPA, flow e portata misurati si richiamano solo per tool, diametro e tipo corrispondenti.\nQuesta impostazione descrive l'ugello realmente montato; non modifica firmware o hardware."));
++        auto* note=new wxStaticText(&dialog,wxID_ANY,_L("Diametri Bondtech: Standard 0,25/0,40 mm; CHT 0,40/0,50/0,60/0,80/1,00 mm. CHT aumenta solo le stime dei profili generici.\nPA, flow e portata misurati si richiamano solo per tool, diametro e tipo corrispondenti.\nQuesta impostazione descrive l'ugello realmente montato; non modifica firmware o hardware."));
 +        note->Wrap(720);layout->Add(note,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
 +        layout->Add(dialog.CreateSeparatedButtonSizer(wxOK|wxCANCEL),0,wxEXPAND|wxALL,12);dialog.SetSizerAndFit(layout);
 +        if(dialog.ShowModal()!=wxID_OK)return;
@@ -2103,35 +2596,9 @@ index 00000000..07df82bb
 +        std::vector<LibraryEntry> saved_entries;
 +        for(const auto& e:entries)if(e.id.rfind("INDX:",0)==0)saved_entries.push_back(e);
 +        persist_library(saved_entries,true);
-+        const size_t count=std::max(tool_count(),bundle.filament_presets.size());
-+        bundle.set_num_filaments(count);
-+        auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour",true);
-+        colors->values.resize(count,"#FFFFFF");
-+        for(auto& e:entries){
-+            if(!e.assigned)continue;
-+            const auto existing=bundle.filaments.find_preset(e.name,false);
-+            const auto actual=existing?existing->name:bundle.filaments.add_detached_preset(e.name,std::move(e.config),e.id);
-+            bundle.filament_presets[e.tool]=actual;colors->values[e.tool]=e.color;
-+            auto* multi=bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour",true);
-+            auto* types=bundle.project_config.option<ConfigOptionStrings>("filament_colour_type",true);
-+            auto* mixed=bundle.project_config.option<ConfigOptionBools>("filament_is_mixed",true);
-+            multi->values.resize(count);types->values.resize(count,"1");mixed->values.resize(count,0);
-+            multi->values[e.tool]=e.color;types->values[e.tool]="1";mixed->values[e.tool]=0;
-+        }
-+        std::vector<int> maps(count,1);
-+        if(const auto* old=bundle.project_config.option<ConfigOptionInts>("filament_map"))
-+            for(size_t f=tool_count();f<count && f<old->values.size();++f)maps[f]=old->values[f];
-+        std::iota(maps.begin(),maps.begin()+tool_count(),1);
-+        bundle.project_config.set_key_value("filament_map",new ConfigOptionInts(maps));
-+        bundle.project_config.set_deserialize_strict("filament_map_mode","Manual");
-+        auto& plates=wxGetApp().plater()->get_partplate_list();
-+        auto* plate=plates.get_curr_plate();if(plate){plate->set_filament_maps(maps);plate->set_filament_map_mode(fmmManual);}
-+        wxGetApp().plater()->on_filament_count_change(bundle.filament_presets.size());
-+        wxGetApp().get_tab(Preset::TYPE_FILAMENT)->select_preset(bundle.filament_presets[0]);
-+        wxGetApp().load_current_presets(false,false);
-+        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();
-+        wxGetApp().plater()->update_filament_colors_in_full_config();
-+        bundle.export_selections(*wxGetApp().app_config);
++        for(auto& e:entries)if(e.assigned && !bundle.filaments.find_preset(e.name,false))
++            e.name=bundle.filaments.add_detached_preset(e.name,std::move(e.config),e.id);
++        apply_assigned_library(entries);
 +        auto_sync_conflict=false;++sync_generation;
 +        const auto completed=_L("Libreria personale salvata: colore, temperature, PA, flow e flusso massimo. Assegnazioni applicate. Salva il progetto e rislicera prima di stampare.");
 +        if(output)output->SetValue(completed);else wxMessageBox(completed,"INDX",wxOK|wxICON_INFORMATION,parent);
@@ -2227,7 +2694,7 @@ index 00000000..07df82bb
 +void show_indx_workspace(wxWindow* parent) {
 +    static wxDialog* workspace=nullptr;
 +    if(workspace){workspace->Raise();return;}
-+    auto* dialog=new wxDialog(parent,wxID_ANY,_L("INDX"),wxDefaultPosition,wxDefaultSize,wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
++    auto* dialog=new wxDialog(parent,wxID_ANY,_L("INDX Auto Slice"),wxDefaultPosition,wxDefaultSize,wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
 +    workspace=dialog;
 +    dialog->Bind(wxEVT_DESTROY,[dialog](wxWindowDestroyEvent& e){if(e.GetEventObject()==dialog)workspace=nullptr;e.Skip();});
 +    auto* layout=new wxBoxSizer(wxVERTICAL);
@@ -2235,97 +2702,55 @@ index 00000000..07df82bb
 +        auto* text=new wxStaticText(owner,wxID_ANY,label);
 +        auto font=text->GetFont();font.SetPointSize(size);font.SetWeight(wxFONTWEIGHT_BOLD);text->SetFont(font);return text;
 +    };
-+    layout->Add(heading(dialog,_L("INDX workspace"),20),0,wxLEFT|wxRIGHT|wxTOP,20);
-+    layout->Add(new wxStaticText(dialog,wxID_ANY,_L("La tua macchina. I tuoi tool. Lo slicing, in un unico posto.")),0,wxALL,20);
++    layout->Add(heading(dialog,_L("INDX Auto Slice"),20),0,wxLEFT|wxRIGHT|wxTOP,20);
++
 +    auto* book=new wxSimplebook(dialog,wxID_ANY);
-+    auto* navigation=new wxBoxSizer(wxHORIZONTAL);
 +    auto tabs=std::make_shared<std::vector<wxToggleButton*>>();
-+    auto compare_on_open=std::make_shared<bool>(false);
-+    auto* selected_summary=heading(dialog,wxEmptyString,13);selected_summary->Hide();
-+    for(const auto& label:{_L("Info INDX"),_L("Config tool"),_L("Auto slicing optimization")}) {
-+        const int index=int(tabs->size());
-+        auto* button=new wxToggleButton(dialog,wxID_ANY,label,wxDefaultPosition,wxSize(-1,48));
-+        tabs->push_back(button);navigation->Add(button,1,wxALL,4);
-+        button->Bind(wxEVT_TOGGLEBUTTON,[book,tabs,index,compare_on_open,selected_summary,dialog](wxCommandEvent&){
-+            const bool entering=book->GetSelection()!=index;
-+            *compare_on_open=index==2 && entering;
-+            book->SetSelection(index);selected_summary->Show(index==2);dialog->Layout();for(size_t i=0;i<tabs->size();++i)(*tabs)[i]->SetValue(i==size_t(index));
-+        });
-+    }
-+    tabs->front()->SetValue(true);layout->Add(navigation,0,wxEXPAND|wxLEFT|wxRIGHT,16);
-+    layout->Add(selected_summary,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,22);
-+    auto page=[&](const wxString& label){auto* panel=new wxPanel(book);book->AddPage(panel,label);return panel;};
-+    auto* info=page(_L("Info INDX"));auto* machine=page(_L("Config tool"));
++    auto compare_on_open=std::make_shared<bool>(true);
++    auto* selected_summary=heading(dialog,wxEmptyString,13);
++    layout->Add(selected_summary,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,12);
 +    auto* optimization=new wxScrolledWindow(book,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxVSCROLL);
 +    optimization->SetScrollRate(0,12);optimization->SetMinSize(wxSize(0,0));book->AddPage(optimization,_L("Auto slicing optimization"));
-+    auto* info_layout=new wxBoxSizer(wxVERTICAL);
-+    info_layout->Add(heading(info,_L("Pronto per il multidiametro")),0,wxALL,20);
-+    auto* info_text=new wxStaticText(info,wxID_ANY,_L("Configura numero, diametri, tipo ugello, dock e offset da KlipperScreen. Orca riceve il montaggio senza doverlo inserire due volte.\n\nIn Auto slicing optimization scegli il risultato che vuoi ottenere: l'assegnazione dei tool, lo slicing e i risultati sono nella stessa pagina.\n\nFilamenti e calibrazioni restano disponibili nei loro comandi dedicati. La connessione usa la stampante gia selezionata in Orca."));
-+    info_text->Wrap(860);info_layout->Add(info_text,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* status=new wxStaticText(info,wxID_ANY,wxEmptyString);status->Wrap(860);
-+    info_layout->Add(status,0,wxEXPAND|wxALL,20);
-+    info->SetSizer(info_layout);
-+    auto* machine_layout=new wxBoxSizer(wxVERTICAL);
-+    machine_layout->Add(heading(machine,_L("Tool della stampante")),0,wxALL,20);
-+    auto* note=new wxStaticText(machine,wxID_ANY,_L("Modifica il montaggio su KlipperScreen. Qui controlli i dati sincronizzati; -- indica una quota non confermata."));note->Wrap(860);
-+    machine_layout->Add(note,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* tool_actions=new wxBoxSizer(wxHORIZONTAL);
-+    auto* read=new wxButton(machine,wxID_ANY,_L("Aggiorna dalla stampante"));tool_actions->Add(read,0,wxRIGHT,12);
-+    auto* sync=new wxButton(machine,wxID_ANY,_L("Sincronizza filamenti nel progetto"));tool_actions->Add(sync,0);
-+    machine_layout->Add(tool_actions,0,wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* color_row=new wxBoxSizer(wxHORIZONTAL);
-+    color_row->Add(new wxStaticText(machine,wxID_ANY,_L("Colore del tool")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,12);
-+    auto* color_tool=new wxChoice(machine,wxID_ANY);color_row->Add(color_tool,0,wxRIGHT|wxALIGN_CENTER_VERTICAL,12);
-+    auto* color_swatch=new wxBitmapButton(machine,wxID_ANY,wxNullBitmap,wxDefaultPosition,wxSize(120,42));color_swatch->SetToolTip(_L("Tocca il campione per scegliere il colore"));color_row->Add(color_swatch,0);
-+    machine_layout->Add(color_row,0,wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto paint_color=[color_tool,color_swatch](){
-+        const int t=color_tool->GetSelection();const auto* values=wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
-+        wxColour color(t>=0 && values && size_t(t)<values->values.size()?wxString::FromUTF8(values->values[t]):wxString("#FFFFFF"));if(!color.IsOk())color=*wxWHITE;
-+        wxBitmap bitmap(92,24);wxMemoryDC dc(bitmap);dc.SetBackground(wxBrush(color));dc.Clear();dc.SelectObject(wxNullBitmap);color_swatch->SetBitmap(bitmap);
-+    };
-+    color_tool->Bind(wxEVT_CHOICE,[paint_color](wxCommandEvent&){paint_color();});
-+    color_swatch->Bind(wxEVT_BUTTON,[dialog,color_tool,paint_color](wxCommandEvent&){
-+        const int t=color_tool->GetSelection();if(t<0)return;
-+        auto& bundle=*wxGetApp().preset_bundle;auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour",true);colors->values.resize(std::max(tool_count(),bundle.filament_presets.size()),"#FFFFFF");
-+        wxColour initial(wxString::FromUTF8(colors->values[t]));if(!initial.IsOk())initial=*wxWHITE;
-+        ColorPickerDialog picker(dialog,ColorRGBA(initial.Red(),initial.Green(),initial.Blue(),static_cast<unsigned char>(255)),{},false,color_tool);
-+        if(picker.ShowModal()!=wxID_OK || !picker.selection())return;
-+        const auto& color=std::get<ColorRGBA>(*picker.selection());const auto hex=wxColour(static_cast<unsigned char>(std::lround(color.r()*255.f)),static_cast<unsigned char>(std::lround(color.g()*255.f)),static_cast<unsigned char>(std::lround(color.b()*255.f))).GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-+        wxGetApp().plater()->take_snapshot("Colore filamento INDX");colors->values[t]=hex;
-+        auto* multi=bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour",true);multi->values.resize(colors->values.size());multi->values[t]=hex;
-+        auto* types=bundle.project_config.option<ConfigOptionStrings>("filament_colour_type",true);types->values.resize(colors->values.size(),"1");types->values[t]="1";
-+        auto* mixed=bundle.project_config.option<ConfigOptionBools>("filament_is_mixed",true);mixed->values.resize(colors->values.size(),0);mixed->values[t]=0;
-+        wxGetApp().plater()->sidebar().update_all_preset_comboboxes();wxGetApp().plater()->update_filament_colors_in_full_config();paint_color();
-+    });
-+    auto* tools=new wxListCtrl(machine,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
-+    int column=0;for(const auto& title:{_L("Tool"),_L("Diametro mm"),_L("Tipo"),_L("Dock X"),_L("Dock Y"),_L("Offset X"),_L("Offset Y"),_L("Offset Z")}){tools->InsertColumn(column,title,wxLIST_FORMAT_LEFT,column==1?120:100);++column;}
-+    machine_layout->Add(tools,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* sync_result=new wxTextCtrl(machine,wxID_ANY,wxEmptyString,wxDefaultPosition,wxSize(-1,64),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
-+    machine_layout->Add(sync_result,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);machine->SetSizer(machine_layout);
 +    auto* opt_layout=new wxBoxSizer(wxVERTICAL);
-+    opt_layout->Add(heading(optimization,_L("Come vuoi stampare?")),0,wxALL,20);
-+    auto* material_row=new wxBoxSizer(wxHORIZONTAL);
-+    material_row->Add(new wxStaticText(optimization,wxID_ANY,_L("Filamento principale")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,12);
-+    auto* primary_choice=new wxChoice(optimization,wxID_ANY);
-+    {
++    auto make_filament_picker=[](wxWindow* owner){
++        auto* choice=new wxBitmapComboBox(owner,wxID_ANY,wxEmptyString,wxDefaultPosition,wxDefaultSize,0,nullptr,wxCB_READONLY);
 +        auto& bundle=*wxGetApp().preset_bundle;
-+        const auto* selected=bundle.prints.get_edited_preset().config.option<ConfigOptionInt>("outer_wall_filament_id");
-+        for(size_t f=0;f<bundle.filament_presets.size();++f) {
++        const auto maps=sidebar_indx_mapping(!manual_indx_mapping());const auto nozzles=nozzle_setup();
++        const auto* colors=bundle.project_config.option<ConfigOptionStrings>("filament_colour");
++        for(size_t f=0;f<bundle.filament_presets.size();++f){
++            const int tool=f<maps.size()?maps[f]-1:-1;
 +            const auto* preset=bundle.filaments.find_preset(bundle.filament_presets[f],false);
 +            const auto* type=preset?preset->config.option<ConfigOptionStrings>("filament_type"):nullptr;
-+            primary_choice->Append(wxString::Format(_L("Filamento %zu (%s): %s"),f+1,
-+                wxString::FromUTF8(type?type->get_at(0):std::string()),wxString::FromUTF8(bundle.filament_presets[f])));
++            wxColour color(colors?wxString::FromUTF8(colors->get_at(f)):wxString("#FFFFFF"));if(!color.IsOk())color=*wxWHITE;
++            wxBitmap swatch(24,24);wxMemoryDC dc(swatch);dc.SetBackground(wxBrush(color));dc.Clear();dc.SelectObject(wxNullBitmap);
++            wxString display=wxString::FromUTF8(bundle.filament_presets[f]);
++            if(display.StartsWith("INDX T")){const auto separator=display.find(" - ");if(separator!=wxString::npos)display=display.Mid(separator+3);}
++            const auto bracket=display.find(" [");if(bracket!=wxString::npos)display=display.Left(bracket);
++            const auto stock=display.find(" - standard");if(stock!=wxString::npos)display=display.Left(stock);
++            const auto tool_label=tool>=0 && size_t(tool)<nozzles.size()?wxString::Format("T%d | %.2f mm",tool,nozzles.at(tool).at("diameter").get<double>()):_L("Non assegnato");
++            choice->Append(wxString::Format("%s | %s | %s",tool_label,wxString::FromUTF8(type?type->get_at(0):std::string()),display.Left(48)),swatch);
 +        }
-+        if(primary_choice->GetCount())primary_choice->SetSelection(std::clamp(selected?selected->value-1:0,0,int(primary_choice->GetCount())-1));
-+    }
++        return choice;
++    };
++    auto* material_row=new wxBoxSizer(wxHORIZONTAL);
++    material_row->Add(new wxStaticText(optimization,wxID_ANY,_L("Colore e filamento delle parti visibili")),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,12);
++    auto* primary_choice=make_filament_picker(optimization);
++    const auto* initial_primary=wxGetApp().preset_bundle->prints.get_edited_preset().config.option<ConfigOptionInt>("outer_wall_filament_id");
++    if(primary_choice->GetCount())primary_choice->SetSelection(std::clamp(initial_primary?initial_primary->value-1:0,0,int(primary_choice->GetCount())-1));
 +    material_row->Add(primary_choice,1,wxEXPAND|wxRIGHT,12);
-+    auto* material_help=new wxButton(optimization,wxID_ANY,_L("Materiali e supporti"));
-+    material_row->Add(material_help,0);
-+    opt_layout->Add(material_row,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* modes=new wxBoxSizer(wxHORIZONTAL);
-+    auto mode_buttons=std::make_shared<std::vector<wxToggleButton*>>();
++    auto* material_help=new wxButton(optimization,wxID_ANY,_L("Materiali e supporti"));material_row->Add(material_help,0);
++    opt_layout->Add(material_row,0,wxEXPAND|wxALL,20);
++    auto* explanation=new wxStaticText(optimization,wxID_ANY,_L("Il confronto parte automaticamente. Premi una scheda per selezionare il risultato, poi conferma in basso. Pareti e superfici mantengono il colore scelto; per il riempimento si confrontano anche altri colori dello stesso materiale. Tool e altezze vengono valutati insieme; Equilibrato privilegia ugelli fino a 0,6 mm."));
++    explanation->Wrap(990);opt_layout->Add(explanation,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    opt_layout->Add(heading(optimization,_L("Cosa ti serve dal pezzo?"),12),0,wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto purpose=std::make_shared<int>(indx_slice_purpose());
++    auto purpose_buttons=std::make_shared<std::vector<wxToggleButton*>>();
++    auto* purpose_row=new wxGridSizer(1,4,8,8);
++    for(int i=0;i<4;++i){auto* button=new wxToggleButton(optimization,wxID_ANY,indx_purpose_name(i),wxDefaultPosition,wxSize(-1,42));button->SetValue(i==*purpose);purpose_buttons->push_back(button);purpose_row->Add(button,1,wxEXPAND);}
++    opt_layout->Add(purpose_row,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* purpose_info=new wxStaticText(optimization,wxID_ANY,indx_purpose_summary(*purpose));
++    fit_indx_wrapped_label(purpose_info,990);opt_layout->Add(purpose_info,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    const wxString labels[]={_L("Dettaglio"),_L("Equilibrato"),_L("Veloce")};
-+    const wxString descriptions[]={_L("Pareti e superfici: ugello fine, fino a 0,4 mm.\nRiempimento: ugello maggiore."),_L("Pareti e superfici: fino a 0,6 mm.\nRiempimento: ugello maggiore."),_L("Ugello maggiore per tutto:\npareti, superfici e riempimento.")};
 +    auto selection=std::make_shared<int>(1);
 +    const auto current_process=wxGetApp().preset_bundle->prints.get_edited_preset().name;
 +    if(current_process.find("INDX - Dettaglio (progetto)")==0)*selection=0;
@@ -2334,51 +2759,68 @@ index 00000000..07df82bb
 +        try{*selection=std::clamp(std::stoi(wxGetApp().app_config->get("indx_slice_style")),0,2);}catch(const std::exception&){}
 +    }
 +    auto requested=std::make_shared<int>(*selection);
-+    for(int i=0;i<3;++i){
-+        auto* card=new wxPanel(optimization);auto* card_layout=new wxBoxSizer(wxVERTICAL);
-+        auto* button=new wxToggleButton(card,wxID_ANY,labels[i],wxDefaultPosition,wxSize(-1,46));mode_buttons->push_back(button);
-+        card_layout->Add(button,0,wxEXPAND|wxBOTTOM,10);
-+        auto* description=new wxStaticText(card,wxID_ANY,descriptions[i]);description->Wrap(260);card_layout->Add(description,1,wxEXPAND|wxALL,4);
-+        card->SetSizer(card_layout);modes->Add(card,1,wxEXPAND|wxALL,6);
-+    }
-+    opt_layout->Add(modes,0,wxEXPAND|wxLEFT|wxRIGHT,14);
-+    auto* actions=new wxBoxSizer(wxHORIZONTAL);
-+    auto* slice=new wxButton(optimization,wxID_ANY,_L("Ricalcola"),wxDefaultPosition,wxSize(220,46));
-+    actions->Add(slice,0,wxRIGHT,16);
-+    auto* compare=new wxButton(optimization,wxID_ANY,_L("Ricalcola confronto"),wxDefaultPosition,wxSize(220,46));
-+    actions->Add(compare,0,wxRIGHT,16);
-+    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Scegli una modalita: lo slicing parte automaticamente."));actions->Add(progress_text,1,wxALIGN_CENTER_VERTICAL);
-+    opt_layout->Add(actions,0,wxEXPAND|wxALL,20);
++    auto* progress_text=new wxStaticText(optimization,wxID_ANY,_L("Confronto automatico delle modalita..."));
++    opt_layout->Add(progress_text,0,wxEXPAND|wxALL,20);
 +    auto* progress=new wxGauge(optimization,wxID_ANY,100,wxDefaultPosition,wxSize(-1,6));opt_layout->Add(progress,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* metrics=new wxStaticText(optimization,wxID_ANY,_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));
 +    auto metric_font=metrics->GetFont();metric_font.SetPointSize(13);metric_font.SetWeight(wxFONTWEIGHT_BOLD);metrics->SetFont(metric_font);
 +    opt_layout->Add(metrics,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* comparison=new wxListCtrl(optimization,wxID_ANY,wxDefaultPosition,wxSize(-1,116),wxLC_REPORT|wxLC_SINGLE_SEL);
-+    int comparison_column=0;
-+    for(const auto& title:{_L("Modalita"),_L("Tempo stimato"),_L("Filamento (g)"),_L("Cambi tool"),_L("Confronto")})
-+        comparison->InsertColumn(comparison_column++,title,wxLIST_FORMAT_LEFT,180);
-+    opt_layout->Add(comparison,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    struct ModeCard {wxPanel* panel;wxStaticText* title;wxStaticText* body;wxStaticText* status;};
++    auto cards=std::make_shared<std::vector<ModeCard>>();
++    auto* card_grid=new wxGridSizer(1,3,12,12);
++    for(int i=0;i<3;++i){
++        auto* panel=new wxPanel(optimization,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxBORDER_SIMPLE|wxTAB_TRAVERSAL|wxWANTS_CHARS);
++        panel->SetMinSize(wxSize(300,-1));panel->SetCursor(wxCursor(wxCURSOR_HAND));
++        auto* box=new wxBoxSizer(wxVERTICAL);
++        auto* title=heading(panel,labels[i],15);title->Wrap(280);box->Add(title,0,wxEXPAND|wxALL,14);
++        auto* body=new wxStaticText(panel,wxID_ANY,wxEmptyString);auto body_font=body->GetFont();body_font.SetPointSize(11);body->SetFont(body_font);box->Add(body,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,14);
++        auto* status=new wxStaticText(panel,wxID_ANY,wxEmptyString);auto status_font=status->GetFont();status_font.SetPointSize(10);status->SetFont(status_font);box->Add(status,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,14);
++        panel->SetSizer(box);card_grid->Add(panel,1,wxEXPAND);cards->push_back({panel,title,body,status});
++    }
++    opt_layout->Add(card_grid,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* advice=new wxStaticText(optimization,wxID_ANY,_L("Il confronto misurera tempo, consumo e cambi tool. La resistenza meccanica non viene simulata."));
++    fit_indx_wrapped_label(advice,990);opt_layout->Add(advice,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
++    opt_layout->Add(heading(optimization,_L("Modifica manuale"),13),0,wxLEFT|wxRIGHT|wxBOTTOM,20);
++    auto* manual_panel=new wxPanel(optimization);auto* manual_layout=new wxBoxSizer(wxVERTICAL);
++    auto manual_pickers=std::make_shared<std::vector<wxBitmapComboBox*>>();
++    auto* manual_grid=new wxFlexGridSizer(1,3,12,12);for(int i=0;i<3;++i)manual_grid->AddGrowableCol(i,1);
++    const wxString role_titles[]={_L("Pareti"),_L("Superfici"),_L("Riempimento")};
++    const wxString role_notes[]={_L("Contorno esterno e pareti interne"),_L("Strati pieni superiori e inferiori"),_L("Struttura interna del modello")};
++    for(int i=0;i<3;++i){
++        auto* group=new wxBoxSizer(wxVERTICAL);group->Add(heading(manual_panel,role_titles[i],12),0,wxBOTTOM,6);
++        auto* note=new wxStaticText(manual_panel,wxID_ANY,role_notes[i]);note->Wrap(300);group->Add(note,0,wxBOTTOM,8);
++        auto* picker=make_filament_picker(manual_panel);picker->SetMinSize(wxSize(280,-1));picker->SetMaxSize(wxSize(360,-1));
++        if(picker->GetCount())picker->SetSelection(primary_choice->GetSelection());manual_pickers->push_back(picker);group->Add(picker,0,wxEXPAND);manual_grid->Add(group,1,wxEXPAND);
++    }
++    manual_layout->Add(manual_grid,0,wxEXPAND|wxBOTTOM,14);
++    auto* manual_reslice=new wxButton(manual_panel,wxID_ANY,_L("Rislicera"));manual_layout->Add(manual_reslice,0,wxBOTTOM,10);
++    auto* manual_info=new wxStaticText(manual_panel,wxID_ANY,_L("Le scelte manuali vengono applicate solo premendo Rislicera. Qui vedrai i dati di questa variante."));
++    manual_info->Wrap(980);manual_layout->Add(manual_info,0,wxEXPAND);manual_panel->SetSizer(manual_layout);
++    opt_layout->Add(manual_panel,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
 +    auto* report=new wxTextCtrl(optimization,wxID_ANY,_L("Le assegnazioni e i risultati del piatto corrente compariranno qui.\nL'altezza layer considera solo i tool usati. Supporti e pittura mantengono le assegnazioni esistenti."),wxDefaultPosition,wxSize(-1,60),wxTE_MULTILINE|wxTE_READONLY|wxBORDER_NONE);
 +    opt_layout->Add(report,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    opt_layout->Add(heading(optimization,_L("Sezione del modello · solo profilo selezionato"),13),0,wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* section_preview=new IndxSectionPreview(optimization);opt_layout->Add(section_preview,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,20);
-+    auto* native_preview=new wxButton(optimization,wxID_ANY,_L("Apri anteprima 3D del profilo selezionato"));
-+    opt_layout->Add(native_preview,0,wxLEFT|wxRIGHT|wxBOTTOM,20);optimization->SetSizer(opt_layout);
-+    layout->Add(book,1,wxEXPAND|wxALL,8);dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1000,760));dialog->SetMinSize(wxSize(920,700));
++    optimization->SetSizer(opt_layout);
++    layout->Add(book,1,wxEXPAND|wxALL,8);
++    auto* confirm_slice=new wxButton(dialog,wxID_ANY,_L("Conferma modalità selezionata"));
++    confirm_slice->Disable();layout->Add(confirm_slice,0,wxALIGN_RIGHT|wxLEFT|wxRIGHT|wxBOTTOM,16);
++    dialog->SetSizerAndFit(layout);dialog->SetSize(wxSize(1180,820));dialog->SetMinSize(wxSize(1060,720));
 +    wxGetApp().UpdateDlgDarkUI(dialog);
-+    auto paint_selection=[mode_buttons,requested,labels,selected_summary](){
-+        selected_summary->SetLabel(wxString::Format(_L("Modalita selezionata: %s"),labels[*requested]));
-+        for(int i=0;i<3;++i){auto* button=(*mode_buttons)[i];const bool selected=i==*requested;
-+            button->SetValue(selected);button->SetLabel(selected?wxString::Format(_L("%s · selezionata"),labels[i]):labels[i]);
-+            auto font=button->GetFont();font.SetWeight(selected?wxFONTWEIGHT_BOLD:wxFONTWEIGHT_NORMAL);button->SetFont(font);
-+            button->SetBackgroundColour(selected?wxColour(31,119,105):(wxGetApp().dark_mode()?wxColour(55,59,62):wxColour(235,238,240)));
-+            button->SetForegroundColour(selected?wxColour(255,255,255):(wxGetApp().dark_mode()?wxColour(235,238,240):wxColour(35,40,45)));button->Refresh();
-+        }
-+    };paint_selection();
-+    auto clear_metrics=[metrics,progress,section_preview](){section_preview->clear();metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
++    auto paint_selection=[requested,labels,selected_summary](){selected_summary->SetLabel(wxString::Format(_L("Risultato selezionato: %s"),labels[*requested]));};paint_selection();
++    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
 +    struct SliceState {
-+        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;};
-+        bool pending=false;bool seen_running=false;bool displayed=false;bool skip_unavailable=false;
++        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;wxString wall,infill,solid;double layer=0.,wall_diameter=0.,infill_diameter=0.,tool_seconds=0.;bool z_compared=false;int variants=0,rejected=0,layers=0;int infill_layers=1;int wall_count=0,top_layers=0,bottom_layers=0;double infill_density=0.;int wall_slot=0,solid_slot=0,infill_slot=0;};
++        bool manual=false;bool manual_draft=false;bool pending=false;bool seen_running=false;bool displayed=false;bool skip_unavailable=false;
++        struct CachedResult {
++            std::string filename,preset;
++            std::shared_ptr<GCodeProcessorResult> result;
++            std::shared_ptr<Preset> process;
++            PrintStatistics statistics;
++            ~CachedResult(){if(!filename.empty()){boost::system::error_code error;boost::filesystem::remove(filename,error);boost::filesystem::remove(boost::filesystem::path(filename).parent_path(),error);}}
++        };
++        std::vector<std::shared_ptr<CachedResult>> cache=std::vector<std::shared_ptr<CachedResult>>(3);
++        boost::filesystem::path cache_dir=boost::filesystem::temp_directory_path()/boost::filesystem::unique_path("orca-indx-auto-%%%%%%%%");
++        std::vector<Json> z_candidates;size_t z_index=0;double z_height=0.;int z_valid=0,z_failed=0;bool z_recovered=false;
++        std::shared_ptr<CachedResult> z_best_cache;Result z_best;
 +        int plate=-1;int mode=-1;int idle_ticks=0;
 +        std::string context;
 +        std::vector<Result> results=std::vector<Result>(3);
@@ -2391,7 +2833,7 @@ index 00000000..07df82bb
 +        int phase=0;size_t candidate=0;int best_filament=0;int approved_filament=0;
 +        bool choosing=false;bool trial_failed=false;
 +        Json alternatives=Json::array();
-+        Result baseline,best;
++        Result baseline,best,displayed_result;
 +        std::string baseline_preset;
 +        std::shared_ptr<wxWindowDisabler> input_lock;
 +    };
@@ -2414,7 +2856,7 @@ index 00000000..07df82bb
 +    auto context=[](){
 +        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        std::ostringstream data;data.imbue(std::locale::classic());data<<std::setprecision(17);
-+        data<<(plate?plate->get_index():-1)<<nozzle_setup().dump();
++        data<<(plate?plate->get_index():-1)<<nozzle_setup().dump()<<indx_slice_purpose();
 +        auto config=wxGetApp().preset_bundle->full_config(false,plate?std::optional<std::vector<int>>(plate->get_filament_maps()):std::nullopt);
 +        for(const auto& key:config.keys())data<<key<<'='<<config.option(key)->serialize()<<'\n';
 +        data<<p->model().id().id;
@@ -2431,63 +2873,65 @@ index 00000000..07df82bb
 +        }
 +        return digest(data.str());
 +    };
-+    auto draw_comparison=[comparison,state,labels,requested](){
-+        comparison->Freeze();comparison->DeleteAllItems();
++    auto draw_comparison=[cards,state,labels,requested,advice,optimization,purpose](){
++        optimization->Freeze();
 +        double best_time=std::numeric_limits<double>::max(),best_weight=best_time;
 +        for(const auto& r:state->results)if(r.valid){best_time=std::min(best_time,r.seconds);best_weight=std::min(best_weight,r.grams);}
 +        for(int i=0;i<3;++i){
-+            const auto& r=state->results[i];const auto row=comparison->InsertItem(i,labels[i]);
-+            comparison->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
-+            if(i==*requested){comparison->SetItemBackgroundColour(row,wxGetApp().dark_mode()?wxColour(28,77,70):wxColour(205,239,232));auto font=comparison->GetFont();font.SetWeight(wxFONTWEIGHT_BOLD);comparison->SetItemFont(row,font);}
-+            comparison->SetItem(row,1,r.valid?r.time:r.unavailable.empty()?_L("Da calcolare"):_L("Non disponibile"));
-+            comparison->SetItem(row,2,r.valid?wxString::Format("%.1f",r.grams):wxString("--"));
-+            comparison->SetItem(row,3,r.valid?wxString::Format("%d",r.changes):wxString("--"));
-+            wxString badge;
-+            if(r.valid && std::abs(r.seconds-best_time)<.5)badge=_L("Minor tempo");
-+            if(r.valid && std::abs(r.grams-best_weight)<.001)badge=badge.empty()?_L("Minor consumo"):_L("Minor tempo e consumo");
-+            comparison->SetItem(row,4,r.unavailable.empty()?badge:r.unavailable.Left(90));
++            const auto& r=state->results[i];auto& card=cards->at(i);
++            const bool selected=i==*requested && !state->manual;
++            card.panel->SetBackgroundColour(selected?(wxGetApp().dark_mode()?wxColour(28,77,70):wxColour(205,239,232)):(wxGetApp().dark_mode()?wxColour(43,43,43):wxColour(245,245,245)));
++            card.title->SetLabel(labels[i]+(selected?_L(" · Selezionato"):wxString()));card.title->Wrap(280);
++            wxString body;
++            if(r.valid)body=wxString::Format(_L("Pareti / superfici: %s\nRiempimento: %s\nAltezza layer: %.3f mm\nLayer totali: %d\n\nTempo: %s\nFilamento: %.1f g\nCambi tool: %d"),r.wall,r.infill,r.layer,r.layers,r.time,r.grams,r.changes);
++            if(r.valid){
++                body+=wxString::Format(_L("\nStruttura: %d pareti · Gyroid %.0f%%\nCoperture: %d sopra / %d sotto"),r.wall_count,r.infill_density,r.top_layers,r.bottom_layers);
++                body+=r.infill_layers<=1?_L("\nRiempimento a ogni strato"):wxString::Format(_L_PLURAL("\nRiempimento ogni %d strato, dove possibile","\nRiempimento ogni %d strati, dove possibile",r.infill_layers),r.infill_layers);
++                if(r.z_compared)body+=wxString::Format(_L("\nUgelli e Z: %d varianti valide, %d scartate"),r.variants,r.rejected);
++                const auto total=int64_t(std::llround(r.changes*r.tool_seconds));
++                body+=wxString::Format(_L("\nTempo cambi: %lld h %lld min %lld s\n(%.1f s/cambio, inclusi nel totale)"),static_cast<long long>(total/3600),static_cast<long long>((total%3600)/60),static_cast<long long>(total%60),r.tool_seconds);
++            }
++            if(!r.valid)body=r.unavailable.empty()?_L("Calcolo automatico in corso..."):_L("Slicing non disponibile per questa scelta.");
++            card.body->SetLabel(body);card.body->Wrap(280);
++            wxString badge=r.unavailable;
++            if(r.valid){
++                badge.clear();
++                if(std::abs(r.seconds-best_time)<.5)badge=_L("Minor tempo");
++                if(std::abs(r.grams-best_weight)<.001)badge+=badge.empty()?_L("Minor consumo"):_L(" · Minor consumo");
++                if(badge.empty())badge=_L("Premi per selezionare");
++            }
++            card.status->SetLabel(badge);card.status->Wrap(280);
++            for(auto* text:{card.title,card.body,card.status})fit_indx_wrapped_label(text,280);
++            card.panel->SetMinSize(wxSize(300,card.panel->GetSizer()->GetMinSize().GetHeight()));
++            card.panel->InvalidateBestSize();card.panel->Layout();card.panel->Refresh();
 +        }
-+        comparison->Thaw();
++        optimization->Layout();optimization->FitInside();optimization->Thaw();
++        const auto& chosen=state->results[*requested];
++        if(chosen.valid && !state->manual){
++            wxString text=wxString::Format(_L("Finitura: pareti con ugello %.2f mm. Struttura interna: riempimento con ugello %.2f mm."),chosen.wall_diameter,chosen.infill_diameter);
++            const auto extra=std::max<int64_t>(0,int64_t(chosen.seconds-best_time));
++            text+=extra>0?wxString::Format(_L(" Rispetto al piu rapido: +%lld min."),static_cast<long long>(extra/60)):_L(" Questo e il risultato piu rapido misurato.");
++            if(chosen.changes>0)text+=wxString::Format(_L(" Sono previsti %d cambi tool, gia inclusi nella stima."),chosen.changes);
++            const int priority=*purpose;
++            int recommended=-1;double rank=std::numeric_limits<double>::max();
++            double thickest=0.;for(const auto& r:state->results)if(r.valid)thickest=std::max(thickest,r.wall_diameter*r.wall_count);
++            for(int i=0;i<3;++i){const auto& r=state->results[i];if(!r.valid)continue;
++                const double candidate=priority==1?r.wall_diameter:priority==2 && r.wall_diameter*r.wall_count+1e-6<thickest?std::numeric_limits<double>::max():priority==0 && i==1?-1.:r.seconds;
++                if(candidate<rank){rank=candidate;recommended=i;}
++            }
++            if(recommended>=0)text+=wxString::Format(_L("\nPer la priorità scelta: valuta %s."),labels[recommended]);
++            if(priority==1)text+=_L(" Un ugello piccolo conserva meglio i dettagli; valuta anche l'altezza layer.");
++            else if(priority==2)text+=wxString::Format(_L(" Le pareti di questa variante hanno spessore nominale %.2f mm (%d linee × %.2f mm), prima degli adattamenti geometrici. Il consiglio confronta spessore nominale e tempi, non simula la resistenza."),chosen.wall_count*chosen.wall_diameter,chosen.wall_count,chosen.wall_diameter);
++            else if(priority==3)text+=_L(" Il consiglio usa il tempo misurato, compresi i cambi: un ugello più grande può risultare più lento se richiede molti cambi.");
++            else text+=_L(" Lo 0,6 offre un compromesso per l'uso quotidiano; lo 0,8 nel riempimento conviene se il tempo totale, inclusi i cambi, diminuisce.");
++            text+=_L("\nPer pezzi sollecitati contano anche materiale, orientamento, densità e schema di riempimento. Lo 0,8 da solo non garantisce maggiore resistenza dello 0,6; verifica il pezzo reale.");
++            advice->SetLabel(text);fit_indx_wrapped_label(advice,990);optimization->Layout();optimization->FitInside();
++        }
 +    };
-+    auto invalidate_comparison=[state,draw_comparison](){for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
++    auto invalidate_comparison=[state,draw_comparison](){state->z_best_cache.reset();state->z_candidates.clear();state->z_index=0;state->z_height=0.;for(auto& cached:state->cache)cached.reset();for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);draw_comparison();};
 +    draw_comparison();
-+    auto painted=std::make_shared<std::string>();
-+    auto refresh=[status,tools,painted,color_tool,paint_color]() {
-+        try {
-+            const auto raw=wxGetApp().app_config->get("indx_printer_snapshot");auto remote=raw.empty()?Json::object():Json::parse(raw);
-+            const auto now=std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-+            if(remote.value("host",std::string())!=host_url() || now-remote.value("observed_at",int64_t(0))>60)remote=Json::object();
-+            const auto signature=remote.dump()+nozzle_setup().dump();if(signature==*painted)return;*painted=signature;
-+            const int selected=std::max(0,color_tool->GetSelection());color_tool->Clear();for(size_t t=0;t<tool_count();++t)color_tool->Append(wxString::Format("T%zu",t));color_tool->SetSelection(std::min(selected,int(tool_count())-1));paint_color();
-+            status->SetLabel(!remote.value("online",false)?_L("Dati stampante non disponibili o da aggiornare. Puoi preparare lo slicing offline."):
-+                wxString::Format(_L("Klipper: %s\nTool dichiarati sulla stampante: %d"),wxString::FromUTF8(remote.value("state",std::string())),int(remote.value("hardware",Json::object()).value("tools",Json::array()).size())));
-+            const auto sync_error=wxGetApp().app_config->get("indx_auto_sync_error");if(!sync_error.empty())status->SetLabel(status->GetLabel()+"\n"+wxString::FromUTF8(sync_error));
-+            auto hardware=Indx::confirmed_tools(remote);const bool declared=!hardware.empty();if(!declared)hardware=nozzle_setup();
-+            const auto geometry=remote.value("geometry",Json::object());const auto offsets=remote.value("offsets",Json::object());
-+            tools->Freeze();tools->DeleteAllItems();
-+            auto number=[](const Json& object,const std::string& key){const auto v=object.value(key,Json());return v.is_number()?wxString::Format("%.3f",v.get<double>()):wxString("--");};
-+            for(const auto& n:hardware){
-+                const int t=n.at("tool").get<int>();const auto prefix="t"+std::to_string(t);
-+                const long row=tools->InsertItem(tools->GetItemCount(),wxString::Format("T%d",t));
-+                tools->SetItemTextColour(row,wxGetApp().dark_mode()?wxColour(230,230,230):wxColour(35,35,35));
-+                tools->SetItem(row,1,number(n,"diameter"));tools->SetItem(row,2,n.at("type")=="cht"?"CHT":_L("Standard"));
-+                tools->SetItem(row,3,declared?number(geometry,prefix+"_x"):"--");tools->SetItem(row,4,declared?number(geometry,prefix+"_dock_y"):"--");
-+                int c=5;for(const char* axis:{"x","y","z"})tools->SetItem(row,c++,declared?number(offsets,prefix+"_offset_"+axis):"--");
-+            }
-+            tools->Thaw();
-+        }catch(const std::exception& e){if(tools->IsFrozen())tools->Thaw();status->SetLabel(wxString::FromUTF8(e.what()));}
-+    };
-+    sync->Bind(wxEVT_BUTTON,[dialog,sync_result,refresh](wxCommandEvent&){synchronize_indx_filaments(dialog,sync_result);refresh();});
-+    read->Bind(wxEVT_BUTTON,[dialog,status,refresh](wxCommandEvent&){
-+        try{
-+            const auto url=host_url();auto task=std::async(std::launch::async,[url](){return read_printer(url);});
-+            wxProgressDialog progress(_L("INDX"),_L("Leggo il montaggio dalla stampante..."),100,dialog,wxPD_APP_MODAL|wxPD_AUTO_HIDE);
-+            while(task.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready){progress.Pulse();wxMilliSleep(30);}
-+            auto remote=task.get();progress.Update(100);wxGetApp().app_config->set("indx_printer_snapshot",remote.dump());refresh();
-+        }catch(const std::exception& e){status->SetLabel(wxString::FromUTF8(e.what()));}
-+    });
-+    auto run_slice=[dialog,report,selection,state,clear_metrics,progress_text,mode_buttons,slice,compare,context,invalidate_comparison,draw_comparison,restore_primary,tabs,primary_choice](bool continuation=false){
++    auto run_slice=[dialog,report,selection,state,clear_metrics,progress_text,context,invalidate_comparison,draw_comparison,restore_primary,tabs,primary_choice](bool continuation=false,bool z_continuation=false){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){progress_text->SetLabel(_L("Attendi la fine dello slicing o dell'esportazione in corso."));return;}
 +        if(continuation && state->context!=context()){
@@ -2497,6 +2941,7 @@ index 00000000..07df82bb
 +            state->context=context();clear_metrics();
 +            progress_text->SetLabel(_L("Il progetto e cambiato: ricalcola prima di scegliere un materiale alternativo."));return;
 +        }
++        if(!z_continuation){state->z_valid=0;state->z_failed=0;state->z_recovered=false;state->z_height=0.;state->z_index=0;state->z_candidates.clear();state->z_best_cache.reset();}
 +        if(!continuation){
 +            state->phase=state->collecting?0:2;state->candidate=0;state->best_filament=0;
 +            state->approved_filament=state->choices[*selection];state->alternatives=Json::array();state->trial_failed=false;
@@ -2505,11 +2950,11 @@ index 00000000..07df82bb
 +        if(state->context!=context())invalidate_comparison();
 +        state->results[*selection].valid=false;state->results[*selection].unavailable.clear();draw_comparison();
 +        clear_metrics();report->Clear();state->displayed=false;
-+        if(!plate || !plate->has_printable_instances()){state->queue.clear();progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
++        if(!plate || !plate->has_printable_instances()){state->queue.clear();state->collecting=false;state->context=context();progress_text->SetLabel(_L("Aggiungi un modello stampabile al piatto corrente."));return;}
 +        p->update(false,true);
 +        Json plan;
 +        const int infill=state->phase==1?state->alternatives.at(state->candidate).at("filament").get<int>():state->phase==2?state->approved_filament:0;
-+        if(!suggest_indx_tools(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report,infill,&plan,primary_choice->GetSelection()+1)){
++        if(!suggest_indx_tools_impl(dialog,p->get_partplate_list().get_current_fff_print(),*selection,report,infill,&plan,primary_choice->GetSelection()+1,state->z_height,z_continuation?&state->z_candidates.at(state->z_index).at("roles"):nullptr)){
 +            restore_primary();state->input_lock.reset();
 +            if(plan.is_null()) {
 +                state->results[*selection].unavailable=report->GetValue();draw_comparison();
@@ -2518,11 +2963,11 @@ index 00000000..07df82bb
 +            }else state->queue.clear(); // A cancelled save/confirmation is not an unavailable mode.
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
++        if(!z_continuation && plan.contains("z_trials"))state->z_candidates=plan.at("z_trials").get<std::vector<Json>>();
 +        if(state->phase==0){state->alternatives=plan.at("alternatives");state->baseline_preset=wxGetApp().preset_bundle->prints.get_edited_preset().name;}
 +        if(!state->input_lock)state->input_lock=std::make_shared<wxWindowDisabler>(dialog);
 +        for(auto* button:*tabs)button->Disable();
 +        state->plate=plate->get_index();state->mode=*selection;state->pending=true;state->seen_running=false;state->idle_ticks=0;
-+        slice->Disable();compare->Disable();for(auto* button:*mode_buttons)button->Disable();
 +        progress_text->SetLabel(_L("Preparazione dello slicing..."));
 +        // Reuse Orca's native validation and background worker without switching views.
 +        p->reslice();
@@ -2531,7 +2976,7 @@ index 00000000..07df82bb
 +    auto run_comparison=[selection,requested,state,paint_selection,run_slice,compare_on_open](){
 +        auto* p=wxGetApp().plater();
 +        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
-+        *compare_on_open=false;
++        *compare_on_open=false;state->manual=false;
 +        state->collecting=true;state->applying=false;state->skip_unavailable=false;
 +        for(auto& r:state->results){r.valid=false;r.unavailable.clear();}
 +        for(auto& r:state->materials)r.valid=false;std::fill(state->choices.begin(),state->choices.end(),0);
@@ -2539,45 +2984,146 @@ index 00000000..07df82bb
 +        state->queue.push_back(*requested);*selection=state->queue.front();state->queue.erase(state->queue.begin());
 +        paint_selection();run_slice();
 +    };
-+    material_help->Bind(wxEVT_BUTTON,[dialog,primary_choice](wxCommandEvent&){show_material_supports(dialog,primary_choice->GetSelection()+1);});
-+    primary_choice->Bind(wxEVT_CHOICE,[run_comparison](wxCommandEvent&){run_comparison();});
-+    compare->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
-+    slice->Bind(wxEVT_BUTTON,[run_comparison](wxCommandEvent&){run_comparison();});
-+    for(int i=0;i<3;++i)(*mode_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[selection,requested,paint_selection,draw_comparison,i,state,run_slice,run_comparison,context](wxCommandEvent&){
++    for(int i=0;i<4;++i)(*purpose_buttons)[i]->Bind(wxEVT_TOGGLEBUTTON,[i,purpose,purpose_buttons,purpose_info,optimization,state,run_comparison,invalidate_comparison,context,clear_metrics](wxCommandEvent&){
 +        auto* p=wxGetApp().plater();
-+        if(state->pending || p->is_background_process_slicing() || p->is_export_gcode_scheduled()){
-+            paint_selection();return;
-+        }
-+        const bool changed=*requested!=i;
-+        *requested=i;*selection=i;wxGetApp().app_config->set("indx_slice_style",std::to_string(i));paint_selection();draw_comparison();
-+        if(changed || state->mode!=i || !state->displayed){
-+            if(state->context==context() && std::all_of(state->materials.begin(),state->materials.end(),[](const SliceState::MaterialResult& r){return r.valid;}))run_slice();
-+            else run_comparison();
-+        }
++        if(state->pending || !state->queue.empty() || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
++        const bool changed=*purpose!=i;*purpose=i;
++        for(int j=0;j<4;++j)(*purpose_buttons)[j]->SetValue(j==i);
++        if(!changed)return;
++        wxGetApp().app_config->set("indx_slice_purpose",std::to_string(i));
++        purpose_info->SetLabel(indx_purpose_summary(i));fit_indx_wrapped_label(purpose_info,990);optimization->Layout();optimization->FitInside();
++        invalidate_comparison();state->displayed=false;state->manual_draft=false;state->context=context();clear_metrics();run_comparison();
 +    });
-+    native_preview->Bind(wxEVT_BUTTON,[dialog,state,requested,section_preview](wxCommandEvent&){
++    material_help->Bind(wxEVT_BUTTON,[dialog,primary_choice](wxCommandEvent&){show_material_supports(dialog,primary_choice->GetSelection()+1);});
++    primary_choice->Bind(wxEVT_COMBOBOX,[run_comparison](wxCommandEvent&){run_comparison();});
++    auto capture_cache=[state](const GCodeProcessorResult* result,const PrintStatistics& stats){
++        if(!result || !boost::filesystem::exists(result->filename))return std::shared_ptr<SliceState::CachedResult>();
++        boost::filesystem::create_directories(state->cache_dir);
++        auto cached=std::make_shared<SliceState::CachedResult>();
++        cached->process=std::make_shared<Preset>(wxGetApp().preset_bundle->prints.get_edited_preset());cached->preset=cached->process->name;
++        cached->filename=(state->cache_dir/boost::filesystem::unique_path("mode-%%%%%%%%.gcode")).string();
++        boost::filesystem::copy_file(result->filename,cached->filename);
++        cached->result=std::make_shared<GCodeProcessorResult>();*cached->result=*result;
++        cached->result->extruder_areas=result->extruder_areas;cached->result->extruder_heights=result->extruder_heights;cached->statistics=stats;return cached;
++    };
++    auto activate_cache=[state,context](const std::shared_ptr<SliceState::CachedResult>& cached){
 +        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
-+        if(state->pending || !state->queue.empty() || !state->displayed || state->mode!=*requested || !plate || !plate->is_slice_result_valid())return;
-+        p->select_view_3D("Preview");dialog->Close();
++        if(!cached || !cached->process || !plate || !boost::filesystem::exists(cached->filename))return false;
++        wxBusyCursor wait;p->suppress_background_process(true);
++        try{
++            wxGetApp().preset_bundle->prints.save_current_preset(cached->preset,false,true,cached->process.get());
++            wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(cached->preset);wxGetApp().load_current_presets(false,false);p->update(false,false);
++            if(!plate->restore_indx_cached_gcode(cached->filename,*cached->result,cached->statistics))throw std::runtime_error("Cached G-code unavailable");
++            p->reset_gcode_toolpaths();p->schedule_background_process(false);state->context=context();return true;
++        }catch(const std::exception&){p->schedule_background_process(false);return false;}
++    };
++    auto restore_cached=[state,requested,selection,context,draw_comparison,paint_selection,metrics,progress,progress_text,manual_pickers,activate_cache](int i){
++        if(i<0 || i>2 || state->context!=context() || !state->cache[i])return false;
++        const auto cached=state->cache[i];auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        if(!plate || plate->get_index()!=state->plate || !cached->result || !boost::filesystem::exists(cached->filename))return false;
++        try {
++            if(!activate_cache(cached))return false;
++            state->manual=false;state->manual_draft=false;state->mode=i;*requested=i;*selection=i;state->displayed_result=state->results[i];state->displayed=true;state->context=context();
++            const auto& r=state->results[i];const int roles[]={r.wall_slot,r.solid_slot,r.infill_slot};for(int j=0;j<3;++j)if(roles[j]>0)(*manual_pickers)[j]->SetSelection(roles[j]-1);
++            metrics->SetLabel(wxString::Format(_L("Tempo: %s | Filamento: %.1f g | Cambi tool: %d"),r.time,r.grams,r.changes));
++            progress->SetValue(100);progress_text->SetLabel(_L("Risultato già calcolato caricato: nessun nuovo slicing."));paint_selection();draw_comparison();return true;
++        }catch(const std::exception&){state->displayed=false;return false;}
++    };
++    auto choose_mode=[selection,requested,paint_selection,draw_comparison,state,run_slice,run_comparison,context,advice,metrics,progress,progress_text,manual_pickers](int i){
++        auto* p=wxGetApp().plater();
++        if(i<0 || i>2 || state->pending || !state->queue.empty() || p->is_background_process_slicing() || p->is_export_gcode_scheduled())return;
++        if(!state->results[i].valid){state->manual=false;state->manual_draft=false;*requested=i;*selection=i;paint_selection();draw_comparison();advice->SetLabel(state->results[i].unavailable);fit_indx_wrapped_label(advice,990);advice->GetParent()->Layout();return;}
++        if(!state->manual && *requested==i && state->displayed && state->mode==i)return;
++        state->manual=false;state->manual_draft=false;*requested=i;*selection=i;wxGetApp().app_config->set("indx_slice_style",std::to_string(i));paint_selection();draw_comparison();
++        if(state->context==context() && state->cache[i] && boost::filesystem::exists(state->cache[i]->filename)){
++            const auto& r=state->results[i];state->displayed_result=r;state->displayed=true;
++            const int roles[]={r.wall_slot,r.solid_slot,r.infill_slot};for(int j=0;j<3;++j)if(roles[j]>0)(*manual_pickers)[j]->SetSelection(roles[j]-1);
++            metrics->SetLabel(wxString::Format(_L("Tempo: %s | Filamento: %.1f g | Cambi tool: %d"),r.time,r.grams,r.changes));
++            progress->SetValue(100);progress_text->SetLabel(_L("Risultato memorizzato selezionato: nessun nuovo slicing. Conferma per aprirlo in anteprima."));return;
++        }
++        run_comparison();
++    };
++    for(int i=0;i<3;++i){auto& card=cards->at(i);
++        for(wxWindow* control:{static_cast<wxWindow*>(card.panel),static_cast<wxWindow*>(card.title),static_cast<wxWindow*>(card.body),static_cast<wxWindow*>(card.status)})
++            control->Bind(wxEVT_LEFT_UP,[choose_mode,i](wxMouseEvent&){choose_mode(i);});
++        card.panel->Bind(wxEVT_KEY_DOWN,[choose_mode,i](wxKeyEvent& event){if(event.GetKeyCode()==WXK_SPACE || event.GetKeyCode()==WXK_RETURN)choose_mode(i);else event.Skip();});
++    }
++    for(auto* picker:*manual_pickers)picker->Bind(wxEVT_COMBOBOX,[manual_info,state](wxCommandEvent&){state->manual_draft=true;manual_info->SetLabel(_L("Modifiche manuali non applicate. Premi Rislicera per aggiornare i dati di questa variante."));});
++    manual_reslice->Bind(wxEVT_BUTTON,[dialog,state,manual_pickers,manual_info,report,clear_metrics,selected_summary,context,requested,compare_on_open,progress_text,draw_comparison](wxCommandEvent&){
++        auto* p=wxGetApp().plater();if(state->pending || !state->queue.empty() || p->is_background_process_slicing())return;
++        try {
++            auto* plate=p->get_partplate_list().get_curr_plate();if(!plate || !plate->has_printable_instances())throw std::runtime_error(_u8L("Aggiungi un modello stampabile al piatto corrente."));
++            auto& bundle=*wxGetApp().preset_bundle;PrintConfig full;full.apply(bundle.full_config(false,std::optional<std::vector<int>>(plate->get_filament_maps())),true);
++            const auto maps=sidebar_indx_mapping(!manual_indx_mapping());const auto nozzles=nozzle_setup();Json candidates=Json::array();
++            for(size_t f=0;f<bundle.filament_presets.size();++f){
++                if(f>=maps.size() || maps[f]<=0 || size_t(maps[f])>nozzles.size())continue;
++                const auto* materials=full.option<ConfigOptionStrings>("filament_type");const auto* supports=full.option<ConfigOptionBools>("filament_is_support");
++                candidates.push_back({{"filament",f+1},{"tool",maps[f]-1},{"diameter",nozzles.at(maps[f]-1).at("diameter")},{"material",materials?materials->get_at(f):std::string()},{"support",supports && supports->get_at(f)}});
++            }
++            const auto roles=Indx::manual_body_roles(candidates,(*manual_pickers)[0]->GetSelection()+1,(*manual_pickers)[1]->GetSelection()+1,(*manual_pickers)[2]->GetSelection()+1);
++            for(const std::string role:{"solid","infill"})if(roles.at(role).at("material")!=roles.at("wall").at("material")){
++                if(wxMessageBox(_L("Questa scelta combina materiali con compatibilita condizionata. Conferma di aver verificato adesione, temperature e proprieta del pezzo."),_L("Materiali manuali"),wxYES_NO|wxNO_DEFAULT|wxICON_WARNING,dialog)!=wxYES)return;break;
++            }
++            const char* fields[]={"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"};
++            for(const auto* object:p->model().objects)for(const auto* field:fields){
++                if(object->config.has(field))throw std::runtime_error(_u8L("Rimuovi le assegnazioni locali del modello prima di forzare i filamenti globali."));
++                for(const auto* volume:object->volumes)if(volume->config.has(field))throw std::runtime_error(_u8L("Una parte contiene assegnazioni locali dei filamenti."));
++                for(const auto& range:object->layer_config_ranges)if(range.second.has(field))throw std::runtime_error(_u8L("Un intervallo di altezza contiene assegnazioni locali dei filamenti."));
++            }
++            if(!wxGetApp().check_and_save_current_preset_changes(_L("Slicing manuale INDX"),_L("Salva le modifiche ai profili prima di applicare la variante manuale."),false))return;
++            Preset process=bundle.prints.get_edited_preset();const std::string keys[]={"wall","wall","solid","solid","solid","infill"};
++            for(int i=0;i<6;++i)process.config.set_key_value(fields[i],new ConfigOptionInt(roles.at(keys[i]).at("filament").get<int>()));
++            use_indx_purpose(process.config,full,roles,*requested);
++            use_indx_nozzle_line_widths(process.config);
++        use_indx_tower_layers(process.config);
++            std::string name="INDX - Manuale (progetto)";for(int suffix=2;const auto* existing=bundle.prints.find_preset(name,false);++suffix){if(existing->is_project_embedded)break;name="INDX - Manuale (progetto) "+std::to_string(suffix);}
++            p->take_snapshot("Slicing manuale INDX");bundle.prints.save_current_preset(name,false,true,&process);wxGetApp().get_tab(Preset::TYPE_PRINT)->select_preset(name);wxGetApp().load_current_presets(false,false);
++            state->manual=true;state->manual_draft=false;state->collecting=false;state->phase=2;state->queue.clear();*compare_on_open=false;state->displayed=false;state->mode=*requested;
++            clear_metrics();draw_comparison();selected_summary->SetLabel(_L("Risultato selezionato: Manuale"));
++            wxString summary;const wxString titles[]={_L("Pareti"),_L("Superfici"),_L("Riempimento")};
++            for(int i=0;i<3;++i)summary+=titles[i]+": "+(*manual_pickers)[i]->GetStringSelection()+"\n";
++            report->SetValue(summary);manual_info->SetLabel(_L("Slicing della variante manuale in corso..."));
++            state->plate=plate->get_index();state->pending=true;state->seen_running=false;state->idle_ticks=0;
++            if(!state->input_lock)state->input_lock=std::make_shared<wxWindowDisabler>(dialog);
++            p->update(false,true);p->reslice();state->context=context();progress_text->SetLabel(_L("Slicing manuale in corso..."));
++        }catch(const std::exception& e){manual_info->SetLabel(wxString::FromUTF8(e.what()));}
++    });
++    confirm_slice->Bind(wxEVT_BUTTON,[dialog,state,requested,labels,context,restore_cached](wxCommandEvent&){
++        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        auto ready=[&](){return !state->pending && state->queue.empty() && !state->collecting && !state->manual_draft && state->displayed && (state->manual?state->mode==*requested:bool(state->cache[*requested])) && state->displayed_result.valid && plate && plate->get_index()==state->plate && plate->is_slice_result_valid() && !p->is_background_process_slicing() && !p->is_export_gcode_scheduled() && !p->is_background_process_update_scheduled() && state->context==context();};
++        if(!ready())return;
++        const auto& r=state->displayed_result;
++        const wxString mode=state->manual?_L("Manuale"):labels[*requested];
++        const wxString summary=indx_purpose_summary(indx_slice_purpose())+"\n\n"+wxString::Format(_L("Confermi lo slicing con modalità %s?\n\nTempo stimato: %s\nFilamento: %.1f g\nCambi tool: %d\nLayer totali: %d\nPareti: %s\nSuperfici: %s\nRiempimento: %s\nAltezza layer: %.3f mm\nTempo cambi tool: %.0f s (%.1f s/cambio, inclusi nel totale)\n\nL'anteprima del G-code sarà pronta per la stampa."),mode,r.time,r.grams,r.changes,r.layers,r.wall,r.solid,r.infill,r.layer,r.changes*r.tool_seconds,r.tool_seconds);
++        state->choosing=true;
++        wxMessageDialog confirmation(dialog,summary,_L("Conferma slicing INDX"),wxYES_NO|wxNO_DEFAULT|wxICON_QUESTION);
++        confirmation.SetYesNoLabels(_L("Conferma e apri anteprima"),_L("Torna al confronto"));
++        const auto answer=confirmation.ShowModal();
++        if(answer!=wxID_YES || !ready()){state->choosing=false;return;}
++        if(!state->manual && !restore_cached(*requested)){
++            state->choosing=false;wxMessageBox(_L("Il risultato memorizzato non è più utilizzabile. Aggiorna il confronto prima di confermare."),_L("Risultato INDX"),wxOK|wxICON_INFORMATION,dialog);return;
++        }
++        p->select_view_3D("Preview",true);state->choosing=false;dialog->Close();
 +    });
 +    const int id=wxWindow::NewControlId();auto timer=std::make_shared<wxTimer>(dialog,id);
-+    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,refresh,timer,state,selection,mode_buttons,slice,compare,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice,material_help,paint_selection,requested,section_preview,native_preview](wxTimerEvent&) {
++    dialog->Bind(wxEVT_TIMER,[dialog,labels,tabs,restore_primary,timer,state,selection,progress,progress_text,metrics,report,clear_metrics,context,invalidate_comparison,draw_comparison,run_slice,run_comparison,compare_on_open,book,primary_choice,material_help,paint_selection,requested,manual_pickers,manual_reslice,manual_info,advice,confirm_slice,purpose_buttons,capture_cache,activate_cache](wxTimerEvent&) {
 +        if(state->choosing)return;
-+        native_preview->Enable(state->displayed && !state->pending && state->queue.empty() && state->mode==*requested);
-+        refresh();auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
++        auto* p=wxGetApp().plater();auto* plate=p->get_partplate_list().get_curr_plate();
 +        const bool busy=p->is_background_process_slicing() || p->is_export_gcode_scheduled();
-+        slice->Enable(!busy && !state->pending);compare->Enable(!busy && !state->pending);for(auto* button:*mode_buttons)button->Enable(!busy && !state->pending);
++        confirm_slice->SetLabel(wxString::Format(_L("Conferma %s"),state->manual?_L("Manuale"):labels[*requested]));
++        confirm_slice->Enable(!busy && !p->is_background_process_update_scheduled() && !state->pending && state->queue.empty() && !state->collecting && !state->manual_draft && state->displayed && (state->manual?state->mode==*requested:bool(state->cache[*requested])) && state->displayed_result.valid && plate && plate->get_index()==state->plate && plate->is_slice_result_valid() && state->context==context());
 +        for(auto* button:*tabs)button->Enable(!busy && !state->pending);
++        const bool editable=!busy && !state->pending && state->queue.empty();for(auto* button:*purpose_buttons)button->Enable(editable);manual_reslice->Enable(editable);for(auto* picker:*manual_pickers)picker->Enable(editable);
 +        primary_choice->Enable(!busy && !state->pending && state->queue.empty());
 +        material_help->Enable(!busy && !state->pending && state->queue.empty());
 +        if(!state->pending && state->queue.empty())state->input_lock.reset();
 +        if(!state->context.empty() && state->context!=context()){
 +            restore_primary();state->input_lock.reset();invalidate_comparison();state->queue.clear();state->context=context();
 +            clear_metrics();report->Clear();state->displayed=false;
-+            progress_text->SetLabel(_L("Parametri modificati: ricalcola il confronto."));
++            *compare_on_open=!state->manual;progress_text->SetLabel(_L("Parametri modificati: aggiornamento automatico del confronto."));
 +            if(state->pending){state->pending=false;progress_text->SetLabel(_L("Il progetto e cambiato durante il confronto. Ricalcola le modalita."));return;}
 +        }
-+        if(*compare_on_open && !state->pending && !busy && book->GetSelection()==2){*compare_on_open=false;run_comparison();return;}
++        if(*compare_on_open && !state->manual && !state->pending && !busy && book->GetSelection()==0){*compare_on_open=false;run_comparison();return;}
 +        if(!state->pending){
 +            if(state->skip_unavailable && !busy) {
 +                state->skip_unavailable=false;
@@ -2587,24 +3133,26 @@ index 00000000..07df82bb
 +                }else state->collecting=false;
 +                return;
 +            }
-+            if(state->displayed && (!plate || plate->get_index()!=state->plate || !plate->is_slice_result_valid() || busy || p->is_background_process_update_scheduled())){
++            // The complete input fingerprint above detects edits. A queued native
++            // validation after cache restoration is not a new user input and
++            // must not restart the entire automatic comparison.
++            if(state->displayed && (!plate || plate->get_index()!=state->plate)){
 +                invalidate_comparison();
-+                clear_metrics();state->displayed=false;progress_text->SetLabel(_L("Il piatto e cambiato. Scegli una modalita o premi Ricalcola."));
++                clear_metrics();state->displayed=false;*compare_on_open=!state->manual;progress_text->SetLabel(_L("Piatto modificato: aggiornamento automatico del confronto."));
 +            }
 +            return;
 +        }
 +        if(!plate || plate->get_index()!=state->plate){state->pending=false;state->queue.clear();invalidate_comparison();clear_metrics();progress_text->SetLabel(_L("Piatto cambiato: avvia lo slicing del piatto selezionato."));return;}
 +        if(busy){
-+            section_preview->clear();
 +            state->seen_running=true;state->idle_ticks=0;
 +            const int percent=std::clamp(int(plate->get_slicing_percent()),0,100);progress->SetValue(percent);
-+            progress_text->SetLabel(state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Confronto in corso: %s · %d%%"),labels[state->mode],percent));return;
++            progress_text->SetLabel(state->z_height>0.?wxString::Format(_L("Confronto ugelli e Z: layer %.3f mm · candidato %d/%d · %d%%"),state->z_height,int(state->z_index+1),int(state->z_candidates.size()),percent):state->manual?wxString::Format(_L("Slicing manuale in corso: %d%%"),percent):state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Confronto in corso: %s · %d%%"),labels[state->mode],percent));return;
 +        }
 +        if(p->is_background_process_update_scheduled())return;
 +        // A fast slice can finish between ticks. Require native validity plus a
 +        // non-empty exported time; never display an unfinished/old Print's statistics.
 +        if(plate->is_slice_result_valid() && plate->fff_print() && !plate->fff_print()->print_statistics().estimated_normal_print_time.empty()){
-+            const auto& stats=plate->fff_print()->print_statistics();
++            auto stats=plate->fff_print()->print_statistics();
 +            const auto* result=plate->get_slice_result();
 +            const double seconds=result?result->print_statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time:0.;
 +            if(!std::isfinite(seconds) || seconds<=0. || !std::isfinite(stats.total_weight)){
@@ -2613,7 +3161,57 @@ index 00000000..07df82bb
 +                clear_metrics();progress_text->SetLabel(_L("Stima non valida: nessun risparmio dichiarato. Ricalcola."));return;
 +            }
 +            if(std::isfinite(seconds) && seconds>0. && std::isfinite(stats.total_weight)){
-+                const SliceState::Result measured={true,wxString::FromUTF8(stats.estimated_normal_print_time),seconds,stats.total_weight,stats.total_toolchanges};
++                SliceState::Result measured={true,wxString::FromUTF8(stats.estimated_normal_print_time),seconds,stats.total_weight,stats.total_toolchanges};
++                const auto& config=wxGetApp().preset_bundle->prints.get_edited_preset().config;
++                const auto maps=sidebar_indx_mapping(!manual_indx_mapping());const auto nozzles=nozzle_setup();
++                auto role=[&](const char* key){const auto* option=config.option<ConfigOptionInt>(key);const int slot=option?option->value-1:-1;const int tool=slot>=0 && size_t(slot)<maps.size()?maps[slot]-1:-1;
++                    return tool>=0 && size_t(tool)<nozzles.size()?wxString::Format("T%d | %.2f mm",tool,nozzles.at(tool).at("diameter").get<double>()):wxString("--");};
++                measured.wall=role("outer_wall_filament_id");measured.solid=role("top_surface_filament_id");measured.infill=role("sparse_infill_filament_id");
++                auto slot=[&](const char* key){const auto* opt=config.option<ConfigOptionInt>(key);return opt?opt->value:0;};
++                measured.wall_slot=slot("outer_wall_filament_id");measured.solid_slot=slot("top_surface_filament_id");measured.infill_slot=slot("sparse_infill_filament_id");
++                auto diameter=[&](int f){const int tool=f>0 && size_t(f)<=maps.size()?maps[f-1]-1:-1;return tool>=0 && size_t(tool)<nozzles.size()?nozzles.at(tool).at("diameter").get<double>():0.;};
++                if(const auto* walls=config.option<ConfigOptionInt>("wall_loops"))measured.wall_count=walls->value;
++                if(const auto* density=config.option<ConfigOptionPercent>("sparse_infill_density"))measured.infill_density=density->value;
++                if(const auto* layers=config.option<ConfigOptionInt>("top_shell_layers"))measured.top_layers=layers->value;
++                if(const auto* layers=config.option<ConfigOptionInt>("bottom_shell_layers"))measured.bottom_layers=layers->value;
++                measured.wall_diameter=diameter(measured.wall_slot);measured.infill_diameter=diameter(measured.infill_slot);
++                if(const auto* layer=config.option<ConfigOptionFloat>("layer_height"))measured.layer=layer->value;
++                const auto time_config=wxGetApp().preset_bundle->full_config(false,std::optional<std::vector<int>>(plate->get_filament_maps()));
++                if(const auto* change=time_config.option<ConfigOptionFloat>("machine_tool_change_time"))measured.tool_seconds=change->value;
++                // Move layer IDs are zero-based and survive cache restoration.
++                // Count printed layers, not tool changes or summed object layers.
++                for(const auto& move:result->moves)if(move.type==EMoveType::Extrude && move.height>0.)
++                    measured.layers=std::max(measured.layers,int(move.layer_id)+1);
++                state->displayed_result=measured;
++                if(state->manual){
++                    manual_info->SetLabel(wxString::Format(_L("Manuale | Tempo: %s | Filamento: %.1f g | Cambi tool: %d | Layer totali: %d\nLayer: %.3f mm | Linea pareti: %.2f mm | Linea riempimento: %.2f mm"),measured.time,measured.grams,measured.changes,measured.layers,measured.layer,measured.wall_diameter,measured.infill_diameter));
++                    metrics->SetLabel(wxString::Format(_L("Manuale | Tempo: %s | Filamento: %.1f g | Cambi tool: %d"),measured.time,measured.grams,measured.changes));
++                    progress->SetValue(100);progress_text->SetLabel(_L("Variante manuale completata. I dati qui sotto si riferiscono a questo slicing."));
++                    state->displayed=true;state->pending=false;state->input_lock.reset();advice->SetLabel(_L("Variante manuale applicata. Tempo e consumo sono stimati dallo slicer; la resistenza richiede una verifica sul pezzo reale."));return;
++                }
++                const auto infill_tool=get_extruder_index(plate->fff_print()->config(),unsigned(std::max(1,measured.infill_slot)-1));
++                const auto wall_tool=get_extruder_index(plate->fff_print()->config(),unsigned(std::max(1,measured.wall_slot)-1));
++                const auto& active=plate->fff_print()->config();
++                double infill_limit=std::min(active.max_layer_height.get_at(infill_tool)>0.?active.max_layer_height.get_at(infill_tool):Indx::nozzle_layer_limit(measured.infill_diameter),Indx::nozzle_layer_limit(measured.infill_diameter));
++                if(const auto* cap=config.option<ConfigOptionFloatOrPercent>("infill_combination_max_layer_height")){const double value=cap->get_abs_value(measured.infill_diameter);if(value>0.)infill_limit=std::min(infill_limit,value);}
++                measured.infill_layers=std::max(1,int(std::floor((infill_limit+1e-8)/measured.layer)));
++                if(!state->z_recovered)++state->z_valid;
++                state->z_recovered=false;
++                measured.variants=state->z_valid;measured.rejected=state->z_failed;
++                measured.z_compared=state->z_candidates.size()>1;
++                if(!state->z_best_cache){
++                    if(state->z_index+1<state->z_candidates.size()){
++                        state->z_best=measured;state->z_best_cache=capture_cache(result,stats);
++                        if(state->z_best_cache){++state->z_index;state->z_height=state->z_candidates[state->z_index].at("height").get<double>();state->pending=false;run_slice(true,true);return;}
++                    }
++                }else if(state->z_best_cache){
++                    const bool better=measured.seconds<state->z_best.seconds-.5 || (std::abs(measured.seconds-state->z_best.seconds)<=.5 && (measured.changes<state->z_best.changes || (measured.changes==state->z_best.changes && measured.grams<state->z_best.grams)));
++                    if(better){state->z_best=measured;state->z_best_cache=capture_cache(result,stats);}
++                    if(++state->z_index<state->z_candidates.size()){state->z_height=state->z_candidates[state->z_index].at("height").get<double>();state->pending=false;run_slice(true,true);return;}
++                    if(!activate_cache(state->z_best_cache)){state->pending=false;state->queue.clear();clear_metrics();progress_text->SetLabel(_L("Impossibile ripristinare il risultato della ricerca Z. Riapri il confronto."));return;}
++                    measured=state->z_best;measured.z_compared=true;measured.variants=state->z_valid;measured.rejected=state->z_failed;stats=state->z_best_cache->statistics;result=plate->get_slice_result();state->z_height=0.;state->z_best_cache.reset();state->z_candidates.clear();state->context=context();
++                }
++                state->displayed_result=measured;
 +                if(state->phase==0){
 +                    state->baseline=measured;state->best=measured;
 +                    state->materials[state->mode]={true,measured,measured,Json()};
@@ -2634,8 +3232,11 @@ index 00000000..07df82bb
 +                    // measured. No unapproved trial is a final table result.
 +                    state->phase=2;state->pending=false;run_slice(true);return;
 +                }
-+                state->results[state->mode]=measured;draw_comparison();
++                state->results[state->mode]=measured;
++                state->cache[state->mode]=capture_cache(result,stats);
++                draw_comparison();
 +            }
++            if(!state->manual_draft){const auto& result=state->results[state->mode];const int roles[]={result.wall_slot,result.solid_slot,result.infill_slot};for(int i=0;i<3;++i)if(roles[i]>0)(*manual_pickers)[i]->SetSelection(roles[i]-1);}
 +            metrics->SetLabel(wxString::Format(_L("Tempo stimato: %s     Materiale: %.1f g     Cambi tool: %d"),wxString::FromUTF8(stats.estimated_normal_print_time),stats.total_weight,stats.total_toolchanges));
 +            if(state->trial_failed)report->AppendText(_L("\nProva alternativa non completata: ripristinato il materiale principale, nessun risparmio dichiarato."));
 +            progress->SetValue(100);progress_text->SetLabel(_L("Slicing completato. Risultati del piatto corrente."));state->displayed=true;state->pending=false;
@@ -2694,16 +3295,28 @@ index 00000000..07df82bb
 +                }
 +            }else state->applying=false;
 +            if(!state->pending && state->queue.empty() && !state->collecting && !state->choosing && state->mode==*requested && plate->get_slice_result()){
-+                section_preview->load(*plate->get_slice_result());
 +                metrics->SetLabel(wxString::Format(_L("%s | Tempo: %s | Materiale: %.1f g | Cambi tool: %d"),labels[*requested],wxString::FromUTF8(stats.estimated_normal_print_time),stats.total_weight,stats.total_toolchanges));
 +            }
 +        }else if(state->seen_running || ++state->idle_ticks>=6){
++            // A rejected geometric/tower/flow trial is not a failed comparison.
++            // Keep completed results and continue through the remaining inputs.
++            if(!state->manual && !state->z_candidates.empty()){
++                ++state->z_failed;
++                if(++state->z_index<state->z_candidates.size()){
++                    state->z_height=state->z_candidates[state->z_index].at("height").get<double>();state->pending=false;run_slice(true,true);return;
++                }
++                if(state->z_best_cache && activate_cache(state->z_best_cache)){
++                    state->z_index=state->z_candidates.size()-1;
++                    state->z_height=state->z_candidates.back().at("height").get<double>();
++                    state->z_recovered=true;state->seen_running=true;state->idle_ticks=0;state->context=context();return;
++                }
++            }
 +            state->pending=false;state->queue.clear();
 +            if(state->phase==1){state->phase=2;state->approved_filament=0;state->trial_failed=true;run_slice(true);return;}
 +            clear_metrics();progress_text->SetLabel(_L("Slicing non completato. Controlla le notifiche di Orca, correggi il problema e riprova qui."));
 +        }
 +    },id);
-+    timer->Start(500);refresh();dialog->Show();
++    timer->Start(500);dialog->Show();
 +}
 +} }
 diff --git a/src/slic3r/GUI/IndxSync.hpp b/src/slic3r/GUI/IndxSync.hpp
@@ -2732,8 +3345,35 @@ index 00000000..9c7ac58d
 +bool check_indx_printer(wxWindow* parent, const Print& print, bool sending = false, const std::string& target = {}, wxTextCtrl* output = nullptr);
 +bool suggest_indx_tools(wxWindow* parent, const Print& print, int style = -1, wxTextCtrl* output = nullptr, int infill_filament = 0, nlohmann::json* material_plan = nullptr, int primary_filament = 0);
 +} }
+diff --git a/src/slic3r/GUI/MainFrame.cpp b/src/slic3r/GUI/MainFrame.cpp
+index 66e982ad..3cf5b8c4 100644
+--- a/src/slic3r/GUI/MainFrame.cpp
++++ b/src/slic3r/GUI/MainFrame.cpp
+@@ -1,3 +1,4 @@
++#include "IndxSync.hpp"
+ #include "MainFrame.hpp"
+ 
+ #include <wx/event.h>
+@@ -2270,7 +2271,16 @@ wxBoxSizer* MainFrame::create_side_tools()
+     update_side_button_style();
+     m_slice_option_btn->Enable();
+     m_print_option_btn->Enable();
+-    //sizer->Add(FromDIP(15), 0, 0, 0, 0);
++    auto* indx_auto_slice=new SideButton(this,_L("INDX Auto Slice"),"");
++    indx_auto_slice->SetLayoutStyle(1);
++    indx_auto_slice->SetToolTip(_L("Confronta le modalita e ottimizza lo slicing del piatto corrente."));
++    indx_auto_slice->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){show_indx_workspace(this);});
++    indx_auto_slice->Bind(wxEVT_UPDATE_UI,[this,indx_auto_slice](wxUpdateUIEvent& e){
++        const bool visible=m_slice_btn->IsShown() && is_indx_profile();
++        if(indx_auto_slice->IsShown()!=visible){indx_auto_slice->Show(visible);Layout();}
++        e.Enable(visible && m_plater && !m_plater->is_background_process_slicing() && !m_plater->is_export_gcode_scheduled());
++    });
++    sizer->Add(indx_auto_slice,0,wxRIGHT|wxALIGN_CENTER_VERTICAL,FromDIP(10));
+     sizer->Add(slice_panel);
+     sizer->Add(FromDIP(15), 0, 0, 0, 0);
+     sizer->Add(print_panel);
 diff --git a/src/slic3r/GUI/PartPlate.cpp b/src/slic3r/GUI/PartPlate.cpp
-index ae0c0c46..fbbd6660 100644
+index ae0c0c46..0c04f812 100644
 --- a/src/slic3r/GUI/PartPlate.cpp
 +++ b/src/slic3r/GUI/PartPlate.cpp
 @@ -10,6 +10,7 @@
@@ -2755,8 +3395,44 @@ index ae0c0c46..fbbd6660 100644
                  error_message = wxString::Format(extruder_idx == 0 ? _L("The left nozzle cannot print %s.") : _L("The right nozzle cannot print %s."),
                                                   filament_type);
                  return false;
+@@ -4766,6 +4769,23 @@ int PartPlate::load_gcode_from_file(const std::string& filename)
+ 	return ret;
+ }
+ 
++// Restore a native result without re-slicing or replacing the editable model.
++// Copy to the plate-owned output path so closing the comparison can free its cache.
++bool PartPlate::restore_indx_cached_gcode(const std::string& filename, const GCodeProcessorResult& result, const PrintStatistics& statistics)
++{
++    if(!m_print || !m_gcode_result || !boost::filesystem::exists(filename))return false;
++    const auto output=get_tmp_gcode_path();
++    if(output.empty())return false;
++    boost::filesystem::copy_file(filename,output,boost::filesystem::copy_option::overwrite_if_exists);
++    const auto previous=m_tmp_gcode_path;m_tmp_gcode_path.clear();
++    if(load_gcode_from_file(output)!=0){m_tmp_gcode_path=previous;return false;}
++    *m_gcode_result=result;m_gcode_result->filename=output;
++    m_gcode_result->extruder_areas=result.extruder_areas;m_gcode_result->extruder_heights=result.extruder_heights;
++    m_print->print_statistics()=statistics;
++    m_print->set_gcode_file_ready();update_slice_result_valid_state(true);
++    return true;
++}
++
+ int PartPlate::load_thumbnail_data(std::string filename, ThumbnailData& thumb_data)
+ {
+ 	bool result = true;
+diff --git a/src/slic3r/GUI/PartPlate.hpp b/src/slic3r/GUI/PartPlate.hpp
+index ac7a9db0..04c2162b 100644
+--- a/src/slic3r/GUI/PartPlate.hpp
++++ b/src/slic3r/GUI/PartPlate.hpp
+@@ -665,6 +665,7 @@ public:
+     }
+     //load gcode from file
+     int load_gcode_from_file(const std::string& filename);
++    bool restore_indx_cached_gcode(const std::string& filename, const GCodeProcessorResult& result, const PrintStatistics& statistics);
+     //load thumbnail data from file
+     int load_thumbnail_data(std::string filename, ThumbnailData& thumb_data);
+     //load pattern thumbnail data from file
 diff --git a/src/slic3r/GUI/Plater.cpp b/src/slic3r/GUI/Plater.cpp
-index 6e4d3e34..7b06c541 100644
+index 6e4d3e34..3a72e9a2 100644
 --- a/src/slic3r/GUI/Plater.cpp
 +++ b/src/slic3r/GUI/Plater.cpp
 @@ -1,3 +1,5 @@
@@ -2842,24 +3518,17 @@ index 6e4d3e34..7b06c541 100644
  
      ams_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "ams_fila_sync", wxEmptyString, wxDefaultSize, wxDefaultPosition,
                                                   wxBU_EXACTFIT | wxNO_BORDER, false, 16); // ORCA match icon size with other icons as 16x16
-@@ -3359,6 +3383,16 @@ Sidebar::Sidebar(Plater *parent)
+@@ -3359,6 +3383,9 @@ Sidebar::Sidebar(Plater *parent)
      p->m_bpButton_ams_filament = ams_btn;
  
      bSizer39->Add(ams_btn, 0, wxALIGN_CENTER | wxLEFT, FromDIP(SidebarProps::WideSpacing()));
-+    auto* indx_sync_btn = new wxButton(p->m_panel_filament_title, wxID_ANY, _L("INDX · Gestisci e ottimizza"), wxDefaultPosition, FromDIP(wxSize(-1,32)), wxBU_EXACTFIT);
-+    indx_sync_btn->SetToolTip(_L("Apri lo spazio INDX: stampante e tool, filamenti e calibrazioni, controlli del piatto."));
-+    indx_sync_btn->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){show_indx_workspace(this);});
-+    indx_sync_btn->Bind(wxEVT_UPDATE_UI,[](wxUpdateUIEvent& e){
-+        e.Enable(is_indx_profile());
-+    });
 +    indx_actions->Add(create_indx_mapping_controls(p->m_panel_filament_title),0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,FromDIP(8));
-+    indx_actions->Add(indx_sync_btn,0,wxEXPAND|wxALL,FromDIP(8));
 +    install_indx_profile_publisher(this);
 +
      //bSizer39->Add(FromDIP(10), 0, 0, 0, 0 );
  
      ScalableButton* set_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "settings");
-@@ -3748,7 +3782,10 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
+@@ -3748,7 +3775,10 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
      auto side = filament_idx % 2;
      auto /***/sizer_filaments = this->p->sizer_filaments->GetItem(side)->GetSizer();
      if (side == 1 && filament_idx > 1) sizer_filaments->Remove(filament_idx / 2);
@@ -2871,7 +3540,7 @@ index 6e4d3e34..7b06c541 100644
      if (side == 0 && filament_idx > 0) {
          sizer_filaments = this->p->sizer_filaments->GetItem(1)->GetSizer();
          sizer_filaments->AddStretchSpacer(1);
-@@ -11364,6 +11401,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
+@@ -11364,6 +11394,19 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
      else
          invalidated = background_process.apply(this->model, preset_bundle->full_config(false));
  
@@ -2891,7 +3560,7 @@ index 6e4d3e34..7b06c541 100644
      if ((invalidated == Print::APPLY_STATUS_CHANGED) || (invalidated == Print::APPLY_STATUS_INVALIDATED))
          // BBS: add only gcode mode
          q->set_only_gcode(false);
-@@ -13859,6 +13909,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
+@@ -13859,6 +13902,11 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config,
  
  void Plater::priv::on_action_send_to_printer(bool isall)
  {
@@ -2903,7 +3572,7 @@ index 6e4d3e34..7b06c541 100644
  	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
      if (isall) {
          m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
-@@ -20890,6 +20945,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
+@@ -20890,6 +20938,10 @@ void Plater::reslice_SLA_until_step(SLAPrintObjectStep step, const ModelObject &
  }
  void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
  {
@@ -2914,7 +3583,7 @@ index 6e4d3e34..7b06c541 100644
      // if physical_printer is selected, send gcode for this printer
      // DynamicPrintConfig* physical_printer_config = wxGetApp().preset_bundle->physical_printers.get_selected_printer_config();
      DynamicPrintConfig* physical_printer_config = &Slic3r::GUI::wxGetApp().preset_bundle->printers.get_edited_preset().config;
-@@ -20899,6 +20958,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
+@@ -20899,6 +20951,10 @@ void Plater::send_gcode_legacy(int plate_idx, Export3mfProgressFn proFn)
      PrintHostJob upload_job(physical_printer_config);
      if (upload_job.empty())
          return;
@@ -2926,7 +3595,7 @@ index 6e4d3e34..7b06c541 100644
      // Orca: the use_3mf printer option makes us send a .gcode.3mf to the printer
      const auto* use_3mf_opt = physical_printer_config->option<ConfigOptionBool>("use_3mf");
 diff --git a/tests/fff_print/test_fill.cpp b/tests/fff_print/test_fill.cpp
-index 1fbedcda..4046b401 100644
+index 1fbedcda..b3a4145b 100644
 --- a/tests/fff_print/test_fill.cpp
 +++ b/tests/fff_print/test_fill.cpp
 @@ -43,6 +43,8 @@
@@ -3249,6 +3918,66 @@ index 1fbedcda..4046b401 100644
  bool test_if_solid_surface_filled(const ExPolygon& expolygon, double flow_spacing, double angle = 0, double density = 1.0);
  
  #if 0
+@@ -2353,3 +2659,59 @@ TEST_CASE("Adaptive TPMS anchors match the printed infill", "[Fill][InternalBrid
+             max_distance = std::max(max_distance, printed_tree.distance_from_lines<false>(point));
+     CHECK(unscale<double>(max_distance) <= 0.012);
+ }
++
++TEST_CASE("INDX blocks only unassigned filaments actually used by the plate", "[Fill][INDX][ExclusiveMapping]") {
++    auto config=Slic3r::Test::multifilament_config(2);
++    config.set_key_value("machine_start_gcode",new ConfigOptionString("INDX_PRINT_START"));
++    config.set_key_value("layer_change_gcode",new ConfigOptionString("G92 E0"));
++    config.set_key_value("filament_map",new ConfigOptionInts({1,2}));
++    config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    config.set_key_value("single_extruder_multi_material",new ConfigOptionBool(false));
++    config.set_key_value("enable_support",new ConfigOptionBool(false));
++    config.set_key_value("indx_unassigned_filaments",new ConfigOptionInts({2}));
++    Print print;Model model;
++    Slic3r::Test::init_print({Slic3r::Test::cube(12)},print,model,config);
++    model.objects.front()->config.set_key_value("extruder",new ConfigOptionInt(1));
++    print.apply(model,config);
++    INFO(print.validate().string);
++    REQUIRE(print.validate().string.empty());
++    config.set_key_value("indx_unassigned_filaments",new ConfigOptionInts({1}));
++    print.apply(model,config);
++    CHECK(print.validate().string.find("non ha un tool assegnato")!=std::string::npos);
++    config.set_key_value("indx_unassigned_filaments",new ConfigOptionInts{});
++    print.apply(model,config);
++    CHECK(print.validate().string.empty());
++}
++
++TEST_CASE("INDX validates layer heights against used mapped tools instead of the default object filament", "[Fill][INDX][UsedNozzleHeight]") {
++    auto config=Slic3r::Test::multifilament_config(2);
++    config.set_key_value("machine_start_gcode",new ConfigOptionString("INDX_PRINT_START TOOL=1"));
++    config.set_key_value("layer_change_gcode",new ConfigOptionString("G92 E0"));
++    config.set_key_value("nozzle_diameter",new ConfigOptionFloats({.4,.8}));
++    config.set_key_value("max_layer_height",new ConfigOptionFloats({.28,.64}));
++    config.set_key_value("printer_extruder_id",new ConfigOptionInts({1,2}));
++    config.set_key_value("printer_extruder_variant",new ConfigOptionStrings({"Direct Drive Standard","Direct Drive Standard"}));
++    config.set_key_value("filament_map",new ConfigOptionInts({1,2}));
++    config.set_key_value("filament_map_mode",new ConfigOptionEnum<FilamentMapMode>(fmmManual));
++    config.set_key_value("single_extruder_multi_material",new ConfigOptionBool(false));
++    config.set_key_value("enable_support",new ConfigOptionBool(false));
++    config.set_key_value("enable_prime_tower",new ConfigOptionBool(false));
++    config.set_key_value("layer_height",new ConfigOptionFloat(.6));
++    config.set_key_value("initial_layer_print_height",new ConfigOptionFloat(.24));
++    for(const char* key:{"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"})
++        config.set_key_value(key,new ConfigOptionInt(2));
++    for(const char* key:{"line_width","initial_layer_line_width","outer_wall_line_width","inner_wall_line_width","sparse_infill_line_width","internal_solid_infill_line_width","top_surface_line_width"})
++        config.set_key_value(key,new ConfigOptionFloatOrPercent(100.,true));
++    Print print;Model model;
++    Slic3r::Test::init_print({Slic3r::Test::cube(12)},print,model,config);
++    model.objects.front()->config.set_key_value("extruder",new ConfigOptionInt(1));
++    print.apply(model,config);
++    INFO(print.validate().string);
++    CHECK(print.indx_layer_height_limit()>.63);
++    CHECK(print.object_extruders()==std::vector<unsigned int>{1});
++    CHECK(print.objects().front()->object_extruders()==std::vector<unsigned int>{1});
++    CHECK(print.validate().string.empty());
++    config.set_key_value("outer_wall_filament_id",new ConfigOptionInt(1));
++    print.apply(model,config);
++    CHECK_FALSE(print.validate().string.empty());
++}
 diff --git a/tests/fff_print/test_gcodeprocessor.cpp b/tests/fff_print/test_gcodeprocessor.cpp
 index 48cf3e8a..3d44a283 100644
 --- a/tests/fff_print/test_gcodeprocessor.cpp
@@ -3347,13 +4076,14 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..651862cb
+index 00000000..4ff3cb66
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,385 @@
+@@ -0,0 +1,548 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
++#include "libslic3r/PrintConfig.hpp"
 +#include <utility>
 +using namespace Slic3r::Indx;
 +
@@ -3372,15 +4102,15 @@ index 00000000..651862cb
 +    CHECK(material_proposal(tools,style,tools,1).at("alternatives").empty());
 +}
 +
-+TEST_CASE("Different colors are offered only within the primary polymer", "[IndxChecks][MaterialProposal]") {
++TEST_CASE("Sparse infill uses the largest same polymer nozzle regardless of color", "[IndxChecks][MaterialProposal]") {
 +    const std::string style=GENERATE("detail","balanced","speed");
 +    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PLA"},{"color","#FFFFFF"}},
 +        {{"filament",2},{"tool",1},{"diameter",.8},{"material","PLA"},{"color","#000000"}},
 +        {{"filament",3},{"tool",2},{"diameter",1.2},{"material","ABS"},{"color","#FFFFFF"}}});
 +    const auto plan=material_proposal(tools,style,tools,1);
-+    for(const std::string role:{"wall","solid","infill"})CHECK(plan.at("roles").at(role).at("filament")==1);
-+    REQUIRE(plan.at("alternatives").size()==1);
-+    CHECK(plan.at("alternatives").front().at("filament")==2);
++    for(const std::string role:{"wall","solid"})CHECK(plan.at("roles").at(role).at("filament")==1);
++    CHECK(plan.at("roles").at("infill").at("filament")==(style=="balanced"?1:2));
++    CHECK(plan.at("alternatives").empty());
 +}
 +
 +TEST_CASE("Material compatibility distinguishes bonded parts from release interfaces", "[IndxChecks][MaterialCompatibility]") {
@@ -3419,8 +4149,8 @@ index 00000000..651862cb
 +        {{"filament",3},{"tool",2},{"diameter",1.2},{"material","PLA"}}});
 +    const auto plan=material_proposal(tools,style,tools,1);
 +    for(const std::string role:{"wall","solid","infill"})CHECK(plan.at("roles").at(role).at("filament")==1);
-+    REQUIRE(plan.at("alternatives").size()==1);
-+    CHECK(plan.at("alternatives").front().at("filament")==2);
++    if(style=="balanced")CHECK(plan.at("alternatives").empty());
++    else {REQUIRE(plan.at("alternatives").size()==1);CHECK(plan.at("alternatives").front().at("filament")==2);}
 +}
 +
 +TEST_CASE("Material-aware proposals preserve homogeneous nozzle selection", "[IndxChecks][MaterialProposal]") {
@@ -3468,7 +4198,7 @@ index 00000000..651862cb
 +        {{"filament",2},{"tool",0},{"diameter",.2},{"material","PLA"}},
 +        {{"filament",1},{"tool",4},{"diameter",.4},{"material","PLA"}}});
 +    CHECK(propose_roles(candidates,"balanced")["wall"]["filament"]==1);
-+    CHECK(propose_roles(candidates,"balanced")["infill"]["tool"]==7);
++    CHECK(propose_roles(candidates,"balanced")["infill"]["tool"]==4);
 +    CHECK(propose_roles(candidates,"detail")["infill"]["tool"]==7);
 +    CHECK(propose_roles(candidates,"speed")["wall"]["tool"]==7);
 +    auto mixed=candidates;mixed[0]["material"]="PETG";
@@ -3555,7 +4285,7 @@ index 00000000..651862cb
 +    CHECK(propose_roles(mapped,"balanced",mounted)["wall"]["tool"]==0);
 +    CHECK(propose_roles(mapped,"detail",mounted)["solid"]["tool"]==1);
 +    CHECK(propose_roles(mapped,"detail",mounted)["infill"]["tool"]==2);
-+    CHECK(propose_roles(mapped,"balanced",mounted)["infill"]["tool"]==2);
++    CHECK(propose_roles(mapped,"balanced",mounted)["infill"]["tool"]==0);
 +    CHECK_THROWS_AS(propose_roles(Json::array({candidate(1,0,.6)}),"detail"),std::invalid_argument);
 +    auto finer=mounted;finer.push_back({{"tool",3},{"diameter",.2}});
 +    CHECK_THROWS_AS(propose_roles(mapped,"detail",finer),std::invalid_argument);
@@ -3600,19 +4330,26 @@ index 00000000..651862cb
 +    CHECK(plan.at("roles").at("infill").at("tool")==3);
 +    CHECK(plan.at("roles").at("wall").at("diameter")==.4);
 +    CHECK_THROWS_AS(material_proposal(candidates,"detail",mounted,1),std::invalid_argument);
++    candidates[1]["color"]="#FFFFFF";
++    const auto white_detail=material_proposal(candidates,"detail",mounted,1);
++    CHECK(white_detail.at("roles").at("wall").at("tool")==1);
++    CHECK(white_detail.at("roles").at("solid").at("tool")==1);
++    CHECK(white_detail.at("roles").at("wall").at("diameter")==.4);
++    CHECK(white_detail.at("roles").at("infill").at("tool")==3);
++    candidates[1]["color"]="#26A69A";
 +    candidates[0]["material"]="ABS";
 +    CHECK(material_proposal(candidates,"detail",mounted,2).at("roles").at("infill").at("filament")==4);
 +    CHECK_THROWS_AS(material_proposal(candidates,"detail",mounted,1),std::invalid_argument);
 +}
 +
 +
-+TEST_CASE("Detail and balanced retain large nozzle infill with distinct wall targets", "[IndxChecks]") {
++TEST_CASE("Detail uses large infill while balanced caps both roles at 06", "[IndxChecks]") {
 +    Json tools=Json::array();
 +    const std::vector<double> diameters={.6,.4,.6,.8};
 +    for(int t=0;t<4;++t)tools.push_back({{"filament",t+1},{"tool",t},{"diameter",diameters[t]},{"material","PLA"}});
 +    const auto detail=propose_roles(tools,"detail",tools),balanced=propose_roles(tools,"balanced",tools);
 +    CHECK(detail["wall"]["tool"]==1);CHECK(detail["solid"]["tool"]==1);CHECK(detail["infill"]["tool"]==3);
-+    CHECK(balanced["wall"]["tool"]==0);CHECK(balanced["solid"]["tool"]==0);CHECK(balanced["infill"]["tool"]==3);
++    CHECK(balanced["wall"]["tool"]==0);CHECK(balanced["solid"]["tool"]==0);CHECK(balanced["infill"]["tool"]==0);
 +    tools.push_back({{"filament",5},{"tool",4},{"diameter",.2},{"material","PLA"}});
 +    CHECK(propose_roles(tools,"detail",tools)["wall"]["tool"]==4);
 +    CHECK(propose_roles(tools,"detail",tools)["infill"]["tool"]==3);
@@ -3735,6 +4472,161 @@ index 00000000..651862cb
 +    const auto changes=selection_changes(after,before,Json::object());
 +    REQUIRE(changes.size()==1);
 +    CHECK(changes.front().at("desired").at("color")=="#26A69A");
++}
++
++TEST_CASE("Manual tool selection releases the previous filament owner", "[IndxChecks][ExclusiveMapping]") {
++    CHECK(claim_tool({1,2,3,4},0,2)==std::vector<int>{2,0,3,4});
++    CHECK(claim_tool({1,2,2,4},3,2)==std::vector<int>{1,0,0,2});
++    CHECK(claim_tool({2,0,3,4},1,1)==std::vector<int>{2,1,3,4});
++    CHECK(claim_tool({1,2,3,4},0,0)==std::vector<int>{0,2,3,4});
++    CHECK(claim_tool({1,2,3,4},0,1)==std::vector<int>{1,2,3,4});
++    CHECK_THROWS_AS(claim_tool({1},1,1),std::invalid_argument);
++    CHECK_THROWS_AS(claim_tool({1},0,-1),std::invalid_argument);
++}
++
++TEST_CASE("Different PLA colors preserve the exterior and respect each mode infill target", "[IndxChecks][MaterialProposal]") {
++    Json tools=Json::array({
++        {{"filament",1},{"tool",0},{"diameter",.6},{"material","PLA"},{"color","#FFFFFF"}},
++        {{"filament",2},{"tool",1},{"diameter",.4},{"material","PLA"},{"color","#AA00FF"}},
++        {{"filament",3},{"tool",2},{"diameter",.4},{"material","PLA"},{"color","#FF0000"}},
++        {{"filament",4},{"tool",3},{"diameter",.8},{"material","PLA"},{"color","#0000FF"}}});
++    const std::string style=GENERATE("detail","balanced","speed");
++    const auto plan=material_proposal(tools,style,tools,2);
++    CHECK(plan.at("roles").at("wall").at("filament")==2);
++    CHECK(plan.at("roles").at("solid").at("filament")==2);
++    CHECK(plan.at("roles").at("infill").at("filament")== (style=="balanced"?1:4));
++    CHECK(plan.at("alternatives").empty());
++    tools[3]["support"]=true;
++    CHECK(material_proposal(tools,style,tools,2).at("roles").at("infill").at("filament")==1);
++    tools[3]["support"]=false;tools[3]["material"]="PETG";
++    const auto incompatible=material_proposal(tools,style,tools,2);
++    CHECK(incompatible.at("roles").at("infill").at("filament")==1);
++    CHECK(incompatible.at("alternatives").empty());
++}
++
++TEST_CASE("Manual assignments preserve exact roles and reject missing or incompatible slots", "[IndxChecks][ManualRoles]") {
++    Json tools=Json::array({{{"filament",1},{"tool",0},{"diameter",.4},{"material","PLA"}},{{"filament",2},{"tool",1},{"diameter",.8},{"material","PLA"}},{{"filament",3},{"tool",2},{"diameter",.6},{"material","ABS"}}});
++    const auto roles=manual_body_roles(tools,1,1,2);
++    CHECK(roles.at("wall").at("filament")==1);CHECK(roles.at("solid").at("filament")==1);CHECK(roles.at("infill").at("filament")==2);
++    CHECK_THROWS_AS(manual_body_roles(tools,1,1,3),std::invalid_argument);
++    CHECK_THROWS_AS(manual_body_roles(tools,1,1,9),std::invalid_argument);
++    tools[1]["support"]=true;CHECK_THROWS_AS(manual_body_roles(tools,1,1,2),std::invalid_argument);
++}
++
++TEST_CASE("Percentage bridge width validates against its own nozzle on mixed diameter printers", "[IndxChecks][BridgeWidth]") {
++    Slic3r::FullPrintConfig config;
++    config.nozzle_diameter.values={.6,.4,.4,.8};
++    config.bridge_line_width=Slic3r::ConfigOptionFloatOrPercent(100.,true);
++    CHECK(Slic3r::validate(config,false).count("bridge_line_width")==0);
++    config.bridge_line_width=Slic3r::ConfigOptionFloatOrPercent(110.,true);
++    CHECK(Slic3r::validate(config,false).count("bridge_line_width")==1);
++}
++
++TEST_CASE("Purpose choices set repeatable structure and make solicited parts denser than draft parts", "[IndxChecks][Purpose]") {
++    const auto daily=purpose_settings(0),finish=purpose_settings(1),strong=purpose_settings(2),draft=purpose_settings(3);
++    CHECK(strong.walls>daily.walls);CHECK(daily.walls>draft.walls);
++    CHECK(strong.infill>daily.infill);CHECK(daily.infill>draft.infill);
++    CHECK(strong.bottom_thickness>daily.bottom_thickness);
++    CHECK(finish.top_layers>daily.top_layers);
++    CHECK(purpose_settings(0).walls==daily.walls);
++    CHECK_THROWS_AS(purpose_settings(4),std::invalid_argument);
++}
++TEST_CASE("Automatic Z grows with mode and active nozzle while respecting configured bounds", "[IndxChecks][PurposeLayers]") {
++    const int purpose=GENERATE(0,1,2,3);
++    const double fine=purpose_layer_height(0,purpose,.6,.06,.42);
++    const double balanced=purpose_layer_height(1,purpose,.6,.06,.42);
++    const double speed=purpose_layer_height(2,purpose,.6,.06,.42);
++    CHECK(fine<balanced);CHECK(balanced<speed);CHECK(speed<=.42);
++    CHECK(purpose_layer_height(2,purpose,.8,.08,.56)>speed);
++    // Inactive small tools cannot limit this function: only active bounds enter.
++    CHECK(purpose_layer_height(2,0,.6,.06,.42)>.39);
++    CHECK(purpose_layer_height(1,0,.6,.06,.42)>.29);
++    CHECK(purpose_layer_height(2,purpose,.6,.06,.28)<=.28);
++    CHECK(purpose_layer_height(0,purpose,.25,.05,.175)>=.05);
++    CHECK(purpose_layer_height(2,purpose,.25,.05,.175)<=.175);
++    CHECK_THROWS_AS(purpose_layer_height(2,purpose,.6,.4,.28),std::invalid_argument);
++}
++
++TEST_CASE("Shell counts adapt to Z while preserving physical thickness", "[IndxChecks][PurposeShells]") {
++    const double layer=GENERATE(.1,.2,.28,.3,.4,.56);
++    const int layers=purpose_shell_layers(3,1.2,layer);
++    CHECK(layers>=3);CHECK(layers*layer>=1.2-1e-8);
++    if(layers>3)CHECK((layers-1)*layer<1.2+1e-8);
++    CHECK(purpose_shell_layers(3,1.2,.4)<purpose_shell_layers(3,1.2,.2));
++}
++TEST_CASE("Adaptive Z covers every nozzle pair and grouping boundary on the verified motor grid", "[IndxChecks][AdaptiveZ]") {
++    const double wall=GENERATE(.2,.25,.4,.5,.6,.8,1.);
++    const double infill=GENERATE(.2,.25,.4,.5,.6,.8,1.);
++    const int purpose=GENERATE(0,1,2,3);
++    const int style=GENERATE(0,1,2);
++    const double step=.001875;
++    const double lower=std::max(wall,infill)*.1;
++    const double upper=std::min(nozzle_layer_limit(wall),nozzle_layer_limit(infill));
++    const double base=purpose_layer_height(style,purpose,wall,lower,upper,step);
++    const auto heights=layer_height_candidates(base,lower,nozzle_layer_limit(infill),wall!=infill,step,wall*.5);
++    REQUIRE_FALSE(heights.empty());
++    for(double h:heights){CHECK(h>=lower-1e-8);CHECK(h<=base+1e-8);CHECK(std::abs(h/step-std::round(h/step))<1e-7);}
++    for(int n=1;n<=int(nozzle_layer_limit(infill)/lower);++n){
++        const double boundary=nozzle_layer_limit(infill)/n;
++        if(boundary<lower || boundary>base)continue;
++        const double aligned=align_z_height(boundary,lower,base,step);
++        CHECK(std::any_of(heights.begin(),heights.end(),[&](double h){return std::abs(h-aligned)<1e-7;}));
++        CHECK(aligned*n<=nozzle_layer_limit(infill)+1e-8);
++    }
++}
++TEST_CASE("The 0.8 ceiling includes exact 0.30 walls with 0.60 infill", "[IndxChecks][LayerLimit08]") {
++    CHECK(nozzle_layer_limit(.8)==.64);
++    const auto heights=layer_height_candidates(.42,.08,.64,true,.001875,.3);
++    CHECK(std::any_of(heights.begin(),heights.end(),[](double h){return std::abs(h-.3)<1e-8;}));
++    CHECK(std::any_of(heights.begin(),heights.end(),[](double h){return std::abs(h-.31875)<1e-8;}));
++    CHECK(std::abs(align_z_height(.32,.08,.64,.001875)-.31875)<1e-8);
++    CHECK_THROWS_AS(align_z_height(.01,.01,.02,.03),std::invalid_argument);
++    CHECK_THROWS_AS(layer_height_candidates(.2,.3,.64,true),std::invalid_argument);
++}
++
++
++TEST_CASE("Motor grid metadata uses a locale independent decimal parser", "[IndxChecks][AdaptiveZ]") {
++    CHECK(std::abs(z_step_from_notes("printer\nINDX_Z_STEP=0.001875")-.001875)<1e-9);
++    CHECK(z_step_from_notes("other printer")==0.);
++    CHECK(z_step_from_notes("INDX_Z_STEP=invalid")==0.);
++    CHECK(z_step_from_notes("INDX_Z_STEP=-0.1")==0.);
++    CHECK(z_step_from_notes("INDX_Z_STEP=0,001875")==0.);
++}
++
++TEST_CASE("Fast large nozzle slicing includes a 0.60 layer without tool changes", "[IndxChecks][AdaptiveZ]") {
++    const double base=purpose_layer_height(2,3,.8,.08,.64,.001875);
++    CHECK(base>.63);
++    const auto heights=layer_height_candidates(base,.08,.64,false,.001875,.4);
++    CHECK(std::any_of(heights.begin(),heights.end(),[](double h){return std::abs(h-.6)<1e-8;}));
++}
++
++TEST_CASE("Joint role search includes every available compatible nozzle assignment", "[IndxChecks][AdaptiveZ]") {
++    Json c=Json::array();int f=0;
++    for(double d:{.2,.25,.4,.6,.8})c.push_back({{"filament",++f},{"tool",f-1},{"diameter",d},{"material","PLA"},{"color","white"}});
++    auto blue=c.back();blue["filament"]=6;blue["tool"]=5;blue["color"]="blue";c.push_back(blue);
++    auto abs=blue;abs["filament"]=7;abs["tool"]=6;abs["material"]="ABS";c.push_back(abs);
++    for(const std::string style:{"detail","balanced","speed"}){
++        const auto plans=role_combinations(c,style,1);
++        const size_t visible=style=="detail"?3:style=="balanced"?4:5;
++        const size_t fills=style=="balanced"?4:6;
++        CHECK(plans.size()==visible*visible*fills);
++        for(const auto& plan:plans){
++            CHECK(plan.at("wall").at("color")=="white");CHECK(plan.at("solid").at("color")=="white");
++            CHECK(plan.at("infill").at("material")=="PLA");
++        }
++        CHECK(role_combinations(c,style,1,7).empty());
++    }
++    const auto fast=role_combinations(c,"speed",1);
++    CHECK(std::any_of(fast.begin(),fast.end(),[](const Json& p){return p.at("wall").at("diameter")==.8 && p.at("solid").at("diameter")==.8 && p.at("infill").at("diameter")==.8;}));
++    CHECK(std::any_of(fast.begin(),fast.end(),[](const Json& p){return p.at("wall").at("diameter")==.6 && p.at("solid").at("diameter")==.6 && p.at("infill").at("diameter")==.8;}));
++}
++
++TEST_CASE("Balanced mode remains usable when the primary color exists only on a large nozzle", "[IndxChecks][AdaptiveZ]") {
++    Json c=Json::array({{{"filament",1},{"tool",0},{"diameter",.8},{"material","PLA"},{"color","blue"}},
++        {{"filament",2},{"tool",1},{"diameter",.6},{"material","PLA"},{"color","white"}}});
++    const auto plans=role_combinations(c,"balanced",1);
++    REQUIRE(plans.size()==2);
++    for(const auto& plan:plans){CHECK(plan.at("wall").at("filament")==1);CHECK(plan.at("solid").at("filament")==1);}
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644

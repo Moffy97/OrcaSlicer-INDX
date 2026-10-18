@@ -10,8 +10,8 @@
 [Setup]
 AppId=OrcaSlicerINDXSV08MaxPreview
 AppName=OrcaSlicer INDX SV08 Max
-AppVersion=0.3.0-preview
-AppVerName=OrcaSlicer INDX SV08 Max 0.3.0 preview
+AppVersion=0.3.1-preview
+AppVerName=OrcaSlicer INDX SV08 Max 0.3.1 preview
 AppPublisher=OrcaSlicer INDX community project
 AppPublisherURL=https://github.com/Moffy97/OrcaSlicer-INDX
 AppSupportURL=https://github.com/Moffy97/OrcaSlicer-INDX/issues
@@ -24,7 +24,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#OutputRoot}
-OutputBaseFilename=OrcaSlicer-INDX-SV08Max-0.3.0-preview-Setup-x64
+OutputBaseFilename=OrcaSlicer-INDX-SV08Max-0.3.1-preview-Setup-x64
 Compression=lzma2/fast
 SolidCompression=yes
 LZMANumBlockThreads=2
@@ -44,15 +44,29 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#AppSource}\*"; DestDir: "{app}\app"; Excludes: "*.pdb,*.log,__pycache__\*,.git\*,logs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PackageSource}\dati\*"; DestDir: "{app}\dati"; Flags: onlyifdoesntexist uninsneveruninstall recursesubdirs createallsubdirs; Check: SeedInitialData
 Source: "{#PackageSource}\Avvia-Orca-INDX.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\CHANGELOG_0.3.1.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\COMPATIBILITA_MATERIALI.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\FILAMENTI_STANDARD_PERSONALIZZATI.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\Guida_completa_INDX_Orca_KlipperScreen.pdf"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\INDX_STUDIO_PERFORMANCE.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\LEGGIMI.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\NUOVE_FUNZIONI.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\OrcaSlicer-INDX.patch"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\PLUGIN_KLIPPERSCREEN_SV08MAX.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\prepare_source.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\profili\*"; DestDir: "{app}\profili"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PackageSource}\profili-indx.zip"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\profili-ugello-layer.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\profili-ugello-layer.zip"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\PROFILI_DOWNLOAD.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\PROFILI_ORDINATI.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\PROFILO_BASE_OTTIMIZZATA.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\PROMPTS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\UGELLI_MANUALI_AUTOMATICI.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\UPSTREAM.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\VERSION.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\windows-installer.iss"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\WINDOWS_INSTALLER.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\windows-installer.iss"; DestDir: "{app}"; Flags: ignoreversion
