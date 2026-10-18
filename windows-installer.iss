@@ -64,6 +64,7 @@ Source: "{#PackageSource}\PROFILI_ORDINATI.md"; DestDir: "{app}"; Flags: ignorev
 Source: "{#PackageSource}\PROFILO_BASE_OTTIMIZZATA.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\PROMPTS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageSource}\SHA256SUMS"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\UGELLI_MANUALI_AUTOMATICI.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\UPSTREAM.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageSource}\VERSION.json"; DestDir: "{app}"; Flags: ignoreversion
