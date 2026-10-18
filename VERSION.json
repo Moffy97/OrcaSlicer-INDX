@@ -9,5 +9,7 @@
   "target": "SV08 Max INDX",
   "physical_validation": false,
   "release_tag": "v0.3.1-preview.20261018",
-  "application_dll_sha256": "b0f42e4c9a7e4c01ab763c5cb438fb729d43a8a20ae7394d019f69d0ce36ab5c"
+  "application_dll_sha256": "d56ebe412574d700022088180c7e48b481eeec77142443660c75674683eb433c",
+  "logical_screening": true,
+  "native_finalists_per_mode_material": 5
 }

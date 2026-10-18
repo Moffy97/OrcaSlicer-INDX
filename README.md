@@ -21,7 +21,7 @@ La barra laterale raggruppa gli ugelli in schede con numero tool, diametro in mm
 1. Parti dal profilo SV08 Max INDX incluso e verifica gli ugelli reali. Il profilo pubblico iniziale usa 0,4 / 0,4 / 0,6 / 0,8 mm, non i dati personali di una stampante.
 2. Configura la connessione nella sezione stampante di Orca. In Automatico ricevi i tool dichiarati e confermati su KlipperScreen; in Manuale modifichi il profilo locale. Il firmware e il touchscreen non vengono riconfigurati dai pulsanti locali.
 3. Crea o richiama un filamento, scegli colore e parametri, quindi assegnalo al tool desiderato. La libreria distingue filamenti standard e personalizzati e conserva le calibrazioni per filamento, tool, diametro e tipo ugello.
-4. Apri INDX Auto Slice accanto a Elabora piatto. Dettaglio, Equilibrato e Veloce confrontano automaticamente ugelli, altezze, riempimento combinato, tempi, layer totali, consumo e cambi tool. Pareti e superfici conservano il colore primario; il riempimento puo usare altri colori dello stesso materiale. Conferma il risultato per aprire la sua anteprima memorizzata senza ripetere lo slicing.
+4. Apri INDX Auto Slice accanto a Elabora piatto. Dettaglio, Equilibrato e Veloce valutano prima le combinazioni con una preselezione logica, poi eseguono fino a cinque slicing finalisti per modalita/materiale. Le schede mostrano tempi nativi, layer totali, consumo, cambi tool e conteggio delle varianti valutate/slicerate. Pareti e superfici conservano il colore primario; il riempimento puo usare altri colori dello stesso materiale. Conferma il risultato per aprire la sua anteprima memorizzata senza ripetere lo slicing.
 5. Controlla l'anteprima; modificare il modello o i parametri invalida i risultati memorizzati. I dati sincronizzati non cambiano un G-code gia esportato.
 
 I layer vengono limitati dagli ugelli usati nel piatto corrente, inclusi supporti e assegnazioni per parte o altezza. Un tool montato ma inutilizzato non limita il progetto. Il riempimento combinato puo sommare piu layer parete entro il limite del proprio ugello. Le stime CHT non sostituiscono una misura di portata.
@@ -45,7 +45,7 @@ Le schermate di prova, i risultati simulati e le guide duplicate sono stati rimo
 
 ## Sorgente e verifiche
 
-`UPSTREAM.json` indica il commit ufficiale Orca; `OrcaSlicer-INDX.patch` contiene le modifiche e `python prepare_source.py` ricostruisce il sorgente in una nuova cartella. Compilare Release con la toolchain ufficiale Orca. La patch corrisponde alla build piu recente degli installer; la precedente build portatile ha il proprio sorgente nel tag della release. `windows-installer.iss` contiene la ricetta di installazione.
+`UPSTREAM.json` indica il commit ufficiale Orca; `OrcaSlicer-INDX.patch` contiene le modifiche e `python prepare_source.py` ricostruisce il sorgente in una nuova cartella. Compilare Release con la toolchain ufficiale Orca. La patch corrisponde alla build 0.3.1 di installer e ZIP portatile; le versioni precedenti restano nei propri tag. `windows-installer.iss` contiene la ricetta di installazione.
 
 Per verificare il pacchetto Python: `python verify.py` e `python install_sv08max.py --check`. I test isolati di profili, aggiornamento e rollback restano nel repository; non eseguono il collaudo fisico della stampante. Homing, pulizia, dock, offset e collegamenti vanno verificati sulla singola macchina prima di abilitare i movimenti della conversione.
 

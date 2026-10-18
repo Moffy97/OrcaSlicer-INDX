@@ -187,10 +187,10 @@ index 3c90a4e9..44c4007a 100644
          Travel,
 diff --git a/src/libslic3r/IndxChecks.hpp b/src/libslic3r/IndxChecks.hpp
 new file mode 100644
-index 00000000..06b4b8c6
+index 00000000..e2de7923
 --- /dev/null
 +++ b/src/libslic3r/IndxChecks.hpp
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,468 @@
 +#pragma once
 +#include <nlohmann/json.hpp>
 +#include "IndxMaterials.hpp"
@@ -278,6 +278,65 @@ index 00000000..06b4b8c6
 +    for(int n=1;n<=int(std::floor((infill_limit+1e-8)/lower));++n)add(infill_limit/n);
 +    return heights;
 +}
++// Cheap screening only: no triangles are sliced here. Bounding boxes approximate
++// path lengths; volumetric limits and shell thickness are included. The shortlist
++// is deliberately diverse because this estimate cannot predict detailed geometry.
++// Only native slicing supplies times/grams displayed to the user.
++inline Json shortlist_native_trials(const Json& trials,const Json& geometry,int purpose,size_t budget=5) {
++    if(!trials.is_array() || purpose<0 || purpose>3 || budget==0)
++        throw std::invalid_argument("invalid_trial_screening");
++    struct Candidate {size_t index;double score;std::string roles;int grouping;};
++    std::vector<Candidate> ranked;
++    const auto settings=purpose_settings(purpose);
++    const double change=geometry.value("tool_change",8.);
++    auto speed=[&](const char* key,double fallback){const double v=geometry.value(key,fallback);return std::isfinite(v) && v>0.?v:fallback;};
++    const double wall_speed=speed("wall_speed",80.),fill_speed=speed("infill_speed",150.),solid_speed=speed("solid_speed",80.);
++    for(size_t i=0;i<trials.size();++i){
++        const auto& t=trials.at(i);const double h=t.at("height").get<double>();
++        if(!std::isfinite(h) || h<=0.)continue;
++        const auto& roles=t.at("roles");const auto& w=roles.at("wall");const auto& f=roles.at("infill");const auto& s=roles.at("solid");
++        const double wd=w.at("diameter").get<double>(),fd=f.at("diameter").get<double>(),sd=s.at("diameter").get<double>();
++        if(wd<=0. || fd<=0. || sd<=0.)continue;
++        const double cap=t.value("infill_cap",nozzle_layer_limit(fd));
++        const int grouping=std::max(1,int(std::floor((cap+1e-8)/h)));
++        auto duration=[](double length,double width,double height,double velocity,const Json& role){
++            const double flow=role.value("max_flow",0.);
++            return std::max(length/velocity,std::isfinite(flow) && flow>0.?length*width*height/flow:0.);
++        };
++        double score=0.,max_z=0.;
++        for(const auto& box:geometry.value("boxes",Json::array({Json::array({20.,20.,20.})}))){
++            const double x=box.at(0).get<double>(),y=box.at(1).get<double>(),z=box.at(2).get<double>();
++            if(!std::isfinite(x+y+z) || x<=0. || y<=0. || z<=0.)continue;
++            max_z=std::max(max_z,z);const double layers=std::ceil(z/h),perimeter=2.*(x+y);
++            const double shell_layers=std::min(layers,double(purpose_shell_layers(settings.top_layers,settings.top_thickness,h)+purpose_shell_layers(settings.bottom_layers,settings.bottom_thickness,h)));
++            const double area=std::max(0.,x-2.*wd*settings.walls)*std::max(0.,y-2.*wd*settings.walls);
++            score+=duration(perimeter*settings.walls*layers,wd,h,wall_speed,w);
++            score+=duration(area*shell_layers/sd,sd,h,solid_speed,s);
++            score+=duration(area*std::max(0.,layers-shell_layers)*settings.infill/(100.*fd*grouping),fd,h*grouping,fill_speed,f);
++        }
++        if(w.at("tool")!=f.at("tool"))score+=2.*std::ceil(max_z/(h*grouping))*std::max(0.,change);
++        if(w.at("tool")!=s.at("tool"))score+=2.*(settings.top_layers+settings.bottom_layers)*std::max(0.,change);
++        const std::string signature=Json::array({w.at("filament"),s.at("filament"),f.at("filament")}).dump();
++        if(std::isfinite(score))ranked.push_back({i,score,signature,grouping});
++    }
++    std::stable_sort(ranked.begin(),ranked.end(),[](const Candidate& a,const Candidate& b){return a.score<b.score;});
++    Json selected=Json::array();std::vector<size_t> used;
++    auto add=[&](const Candidate& c){if(selected.size()<budget && std::find(used.begin(),used.end(),c.index)==used.end()){selected.push_back(trials.at(c.index));used.push_back(c.index);}};
++    // Two best estimates, then different tool assignments and grouping regimes.
++    // Diversity guards against the coarse geometry estimate favoring only one
++    // diameter or one family of heights. No empirical time is invented here.
++    if(!ranked.empty()){
++        add(ranked.front());if(ranked.size()>1)add(ranked[1]);
++        const auto& first=ranked.front();
++        const auto other_role=std::find_if(ranked.begin(),ranked.end(),[&](const Candidate& c){return c.roles!=first.roles;});
++        if(other_role!=ranked.end())add(*other_role);
++        const auto other_group=std::find_if(ranked.begin(),ranked.end(),[&](const Candidate& c){return c.grouping!=first.grouping;});
++        if(other_group!=ranked.end())add(*other_group);
++        for(const auto& c:ranked)add(c);
++    }
++    return selected;
++}
++
 +// Orca may expand a scalar filament vector to the physical extruder variants.
 +// Repeating the same value changes representation, not a filament setting.
 +inline Json canonical_profile_config(Json data,bool include_default_color=false) {
@@ -1077,10 +1136,10 @@ index fbfd44a4..df52f7e9 100644
          using Times = std::pair<float, float>;
 diff --git a/src/slic3r/GUI/IndxSync.cpp b/src/slic3r/GUI/IndxSync.cpp
 new file mode 100644
-index 00000000..bd9bb984
+index 00000000..2f90e758
 --- /dev/null
 +++ b/src/slic3r/GUI/IndxSync.cpp
-@@ -0,0 +1,2238 @@
+@@ -0,0 +1,2257 @@
 +#include "IndxSync.hpp"
 +#include "I18N.hpp"
 +#include "GUI_App.hpp"
@@ -2319,12 +2378,31 @@ index 00000000..bd9bb984
 +                // Auto mode enables infill combination up to each nozzle's own
 +                // configured limit; normal/manual slicing keeps user constraints.
 +                for(double h:Indx::layer_height_candidates(base,lower,infill_cap,trial_roles.at("wall").at("tool")!=fill.at("tool"),step,visible*.5)){
-+                    Json trial={{"height",h},{"roles",trial_roles}};
++                    Json trial={{"height",h},{"roles",trial_roles},{"infill_cap",infill_cap}};
 +                    if(std::find(trials.begin(),trials.end(),trial)==trials.end())trials.push_back(std::move(trial));
 +                }
 +            };
 +            add_roles(roles);for(const auto& combination:combinations)add_roles(combination);
-+            (*material_plan)["z_trials"]=std::move(trials);
++            Json geometry={{"boxes",Json::array()},{"tool_change",config.machine_tool_change_time.value}};
++            auto configured_speed=[&](const char* key,double fallback){const auto* value=config.option<ConfigOptionFloat>(key);return value && value->value>0.?value->value:fallback;};
++            geometry["wall_speed"]=configured_speed("outer_wall_speed",80.);
++            geometry["infill_speed"]=configured_speed("sparse_infill_speed",150.);
++            geometry["solid_speed"]=configured_speed("top_surface_speed",80.);
++            auto* current=wxGetApp().plater()->get_partplate_list().get_curr_plate();
++            const auto& objects=wxGetApp().plater()->model().objects;
++            for(size_t oi=0;oi<objects.size();++oi)for(size_t ii=0;ii<objects[oi]->instances.size();++ii)
++                if(objects[oi]->instances[ii]->printable && current && current->contain_instance_totally(int(oi),int(ii))){
++                    const auto size=objects[oi]->instance_bounding_box(ii).size();
++                    geometry["boxes"].push_back({size.x(),size.y(),size.z()});
++                }
++            (*material_plan)["logical_trials"]=trials.size();
++            auto finalists=Indx::shortlist_native_trials(trials,geometry,indx_slice_purpose(),5);
++            if(finalists.empty())throw std::runtime_error(_u8L("Nessuna variante valida nella preselezione."));
++            // Screening may choose a different first assignment/height. Apply that
++            // exact candidate before launching the first native background job.
++            roles=finalists.front().at("roles");layer_override=finalists.front().at("height").get<double>();
++            BOOST_LOG_TRIVIAL(info)<<"INDX logical screening: "<<trials.size()<<" candidates, "<<finalists.size()<<" native finalists "<<finalists.dump();
++            (*material_plan)["z_trials"]=std::move(finalists);
 +        }
 +
 +        const char* fields[]={"outer_wall_filament_id","inner_wall_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","sparse_infill_filament_id"};
@@ -2808,7 +2886,7 @@ index 00000000..bd9bb984
 +    auto paint_selection=[requested,labels,selected_summary](){selected_summary->SetLabel(wxString::Format(_L("Risultato selezionato: %s"),labels[*requested]));};paint_selection();
 +    auto clear_metrics=[metrics,progress](){metrics->SetLabel(_L("Tempo stimato: --     Materiale: --     Cambi tool: --"));progress->SetValue(0);};
 +    struct SliceState {
-+        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;wxString wall,infill,solid;double layer=0.,wall_diameter=0.,infill_diameter=0.,tool_seconds=0.;bool z_compared=false;int variants=0,rejected=0,layers=0;int infill_layers=1;int wall_count=0,top_layers=0,bottom_layers=0;double infill_density=0.;int wall_slot=0,solid_slot=0,infill_slot=0;};
++        struct Result {bool valid=false;wxString time;double seconds=0.;double grams=0.;int changes=0;wxString unavailable;wxString wall,infill,solid;double layer=0.,wall_diameter=0.,infill_diameter=0.,tool_seconds=0.;bool z_compared=false;int variants=0,rejected=0,layers=0,logical=0;int infill_layers=1;int wall_count=0,top_layers=0,bottom_layers=0;double infill_density=0.;int wall_slot=0,solid_slot=0,infill_slot=0;};
 +        bool manual=false;bool manual_draft=false;bool pending=false;bool seen_running=false;bool displayed=false;bool skip_unavailable=false;
 +        struct CachedResult {
 +            std::string filename,preset;
@@ -2819,7 +2897,7 @@ index 00000000..bd9bb984
 +        };
 +        std::vector<std::shared_ptr<CachedResult>> cache=std::vector<std::shared_ptr<CachedResult>>(3);
 +        boost::filesystem::path cache_dir=boost::filesystem::temp_directory_path()/boost::filesystem::unique_path("orca-indx-auto-%%%%%%%%");
-+        std::vector<Json> z_candidates;size_t z_index=0;double z_height=0.;int z_valid=0,z_failed=0;bool z_recovered=false;
++        std::vector<Json> z_candidates;size_t z_index=0;double z_height=0.;int z_valid=0,z_failed=0,z_logical=0;bool z_recovered=false;
 +        std::shared_ptr<CachedResult> z_best_cache;Result z_best;
 +        int plate=-1;int mode=-1;int idle_ticks=0;
 +        std::string context;
@@ -2887,7 +2965,7 @@ index 00000000..bd9bb984
 +            if(r.valid){
 +                body+=wxString::Format(_L("\nStruttura: %d pareti · Gyroid %.0f%%\nCoperture: %d sopra / %d sotto"),r.wall_count,r.infill_density,r.top_layers,r.bottom_layers);
 +                body+=r.infill_layers<=1?_L("\nRiempimento a ogni strato"):wxString::Format(_L_PLURAL("\nRiempimento ogni %d strato, dove possibile","\nRiempimento ogni %d strati, dove possibile",r.infill_layers),r.infill_layers);
-+                if(r.z_compared)body+=wxString::Format(_L("\nUgelli e Z: %d varianti valide, %d scartate"),r.variants,r.rejected);
++                if(r.logical>0)body+=wxString::Format(_L("\nPreselezione: %d varianti valutate · %d slicing validi · %d scartati"),r.logical,r.variants,r.rejected);
 +                const auto total=int64_t(std::llround(r.changes*r.tool_seconds));
 +                body+=wxString::Format(_L("\nTempo cambi: %lld h %lld min %lld s\n(%.1f s/cambio, inclusi nel totale)"),static_cast<long long>(total/3600),static_cast<long long>((total%3600)/60),static_cast<long long>(total%60),r.tool_seconds);
 +            }
@@ -2941,7 +3019,7 @@ index 00000000..bd9bb984
 +            state->context=context();clear_metrics();
 +            progress_text->SetLabel(_L("Il progetto e cambiato: ricalcola prima di scegliere un materiale alternativo."));return;
 +        }
-+        if(!z_continuation){state->z_valid=0;state->z_failed=0;state->z_recovered=false;state->z_height=0.;state->z_index=0;state->z_candidates.clear();state->z_best_cache.reset();}
++        if(!z_continuation){state->z_valid=0;state->z_failed=0;state->z_logical=0;state->z_recovered=false;state->z_height=0.;state->z_index=0;state->z_candidates.clear();state->z_best_cache.reset();}
 +        if(!continuation){
 +            state->phase=state->collecting?0:2;state->candidate=0;state->best_filament=0;
 +            state->approved_filament=state->choices[*selection];state->alternatives=Json::array();state->trial_failed=false;
@@ -2963,7 +3041,7 @@ index 00000000..bd9bb984
 +            }else state->queue.clear(); // A cancelled save/confirmation is not an unavailable mode.
 +            progress_text->SetLabel(_L("Proposta non applicata. Controlla il messaggio qui sotto."));return;
 +        }
-+        if(!z_continuation && plan.contains("z_trials"))state->z_candidates=plan.at("z_trials").get<std::vector<Json>>();
++        if(!z_continuation && plan.contains("z_trials")){state->z_candidates=plan.at("z_trials").get<std::vector<Json>>();state->z_logical=plan.value("logical_trials",int(state->z_candidates.size()));}
 +        if(state->phase==0){state->alternatives=plan.at("alternatives");state->baseline_preset=wxGetApp().preset_bundle->prints.get_edited_preset().name;}
 +        if(!state->input_lock)state->input_lock=std::make_shared<wxWindowDisabler>(dialog);
 +        for(auto* button:*tabs)button->Disable();
@@ -3146,7 +3224,7 @@ index 00000000..bd9bb984
 +        if(busy){
 +            state->seen_running=true;state->idle_ticks=0;
 +            const int percent=std::clamp(int(plate->get_slicing_percent()),0,100);progress->SetValue(percent);
-+            progress_text->SetLabel(state->z_height>0.?wxString::Format(_L("Confronto ugelli e Z: layer %.3f mm · candidato %d/%d · %d%%"),state->z_height,int(state->z_index+1),int(state->z_candidates.size()),percent):state->manual?wxString::Format(_L("Slicing manuale in corso: %d%%"),percent):state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Confronto in corso: %s · %d%%"),labels[state->mode],percent));return;
++            progress_text->SetLabel(state->z_height>0.?wxString::Format(_L("Slicing dei finalisti: layer %.3f mm · %d/%d · %d%%"),state->z_height,int(state->z_index+1),int(state->z_candidates.size()),percent):state->manual?wxString::Format(_L("Slicing manuale in corso: %d%%"),percent):state->phase==1?wxString::Format(_L("Confronto materiale alternativo %d/%d: %d%%"),int(state->candidate+1),int(state->alternatives.size()),percent):wxString::Format(_L("Confronto in corso: %s · %d%%"),labels[state->mode],percent));return;
 +        }
 +        if(p->is_background_process_update_scheduled())return;
 +        // A fast slice can finish between ticks. Require native validity plus a
@@ -3197,7 +3275,7 @@ index 00000000..bd9bb984
 +                measured.infill_layers=std::max(1,int(std::floor((infill_limit+1e-8)/measured.layer)));
 +                if(!state->z_recovered)++state->z_valid;
 +                state->z_recovered=false;
-+                measured.variants=state->z_valid;measured.rejected=state->z_failed;
++                measured.variants=state->z_valid;measured.rejected=state->z_failed;measured.logical=state->z_logical;
 +                measured.z_compared=state->z_candidates.size()>1;
 +                if(!state->z_best_cache){
 +                    if(state->z_index+1<state->z_candidates.size()){
@@ -3209,7 +3287,7 @@ index 00000000..bd9bb984
 +                    if(better){state->z_best=measured;state->z_best_cache=capture_cache(result,stats);}
 +                    if(++state->z_index<state->z_candidates.size()){state->z_height=state->z_candidates[state->z_index].at("height").get<double>();state->pending=false;run_slice(true,true);return;}
 +                    if(!activate_cache(state->z_best_cache)){state->pending=false;state->queue.clear();clear_metrics();progress_text->SetLabel(_L("Impossibile ripristinare il risultato della ricerca Z. Riapri il confronto."));return;}
-+                    measured=state->z_best;measured.z_compared=true;measured.variants=state->z_valid;measured.rejected=state->z_failed;stats=state->z_best_cache->statistics;result=plate->get_slice_result();state->z_height=0.;state->z_best_cache.reset();state->z_candidates.clear();state->context=context();
++                    measured=state->z_best;measured.z_compared=true;measured.variants=state->z_valid;measured.rejected=state->z_failed;measured.logical=state->z_logical;stats=state->z_best_cache->statistics;result=plate->get_slice_result();state->z_height=0.;state->z_best_cache.reset();state->z_candidates.clear();state->context=context();
 +                }
 +                state->displayed_result=measured;
 +                if(state->phase==0){
@@ -4076,10 +4154,10 @@ index 1f72f834..246a8960 100644
      test_drc.cpp
 diff --git a/tests/libslic3r/test_indx_checks.cpp b/tests/libslic3r/test_indx_checks.cpp
 new file mode 100644
-index 00000000..4ff3cb66
+index 00000000..4b5aba30
 --- /dev/null
 +++ b/tests/libslic3r/test_indx_checks.cpp
-@@ -0,0 +1,548 @@
+@@ -0,0 +1,582 @@
 +#include <catch2/catch_test_macros.hpp>
 +#include <catch2/generators/catch_generators.hpp>
 +#include "libslic3r/IndxChecks.hpp"
@@ -4627,6 +4705,40 @@ index 00000000..4ff3cb66
 +    const auto plans=role_combinations(c,"balanced",1);
 +    REQUIRE(plans.size()==2);
 +    for(const auto& plan:plans){CHECK(plan.at("wall").at("filament")==1);CHECK(plan.at("solid").at("filament")==1);}
++}
++
++TEST_CASE("Logical screening limits expensive native slicing while retaining diverse finalists", "[IndxChecks][TrialScreening]") {
++    Json trials=Json::array();
++    auto role=[](int slot,int tool,double diameter,double flow){return Json{{"filament",slot},{"tool",tool},{"diameter",diameter},{"max_flow",flow}};};
++    const auto w=role(1,0,.6,18.),f=role(2,1,.8,22.);
++    for(double height:{.42,.36,.31875,.3,.21,.18,.159375,.12})for(bool mixed:{false,true})
++        trials.push_back({{"height",height},{"infill_cap",mixed?.64:.42},{"roles",{{"wall",w},{"solid",w},{"infill",mixed?f:w}}}});
++    const Json geometry={{"boxes",Json::array({Json::array({50.,50.,50.})})},{"tool_change",8.},{"wall_speed",80.},{"solid_speed",80.},{"infill_speed",150.}};
++    for(int purpose=0;purpose<4;++purpose){
++        const auto shortlist=shortlist_native_trials(trials,geometry,purpose);
++        REQUIRE(shortlist.size()==5);
++        CHECK(shortlist==shortlist_native_trials(trials,geometry,purpose));
++        for(const auto& trial:shortlist)CHECK(std::find(trials.begin(),trials.end(),trial)!=trials.end());
++        CHECK(std::any_of(shortlist.begin(),shortlist.end(),[](const Json& t){return t.at("roles").at("infill").at("tool")==0;}));
++        CHECK(std::any_of(shortlist.begin(),shortlist.end(),[](const Json& t){return t.at("roles").at("infill").at("tool")==1;}));
++        CHECK(shortlist_native_trials(trials,geometry,purpose,1).size()==1);
++    }
++    CHECK(shortlist_native_trials(Json::array(),geometry,0).empty());
++    CHECK(shortlist_native_trials(Json::array({trials[0]}),geometry,0)==Json::array({trials[0]}));
++    CHECK_THROWS_AS(shortlist_native_trials(trials,geometry,0,0),std::invalid_argument);
++}
++
++TEST_CASE("Logical screening uses volumetric limits and shell material before selecting native jobs", "[IndxChecks][TrialScreening]") {
++    Json trials=Json::array();
++    for(int tool:{0,1}){
++        Json role={{"filament",tool+1},{"tool",tool},{"diameter",.8},{"max_flow",tool==0?1.:30.}};
++        trials.push_back({{"height",.6},{"infill_cap",.64},{"roles",{{"wall",role},{"solid",role},{"infill",role}}}});
++    }
++    const Json geometry={{"boxes",Json::array({Json::array({50.,50.,50.})})}};
++    CHECK(shortlist_native_trials(trials,geometry,3,1).front().at("roles").at("wall").at("tool")==1);
++    for(const auto& trial:shortlist_native_trials(trials,geometry,3))CHECK(trial.contains("height"));
++    trials.front()["height"]=0.;
++    CHECK(shortlist_native_trials(trials,geometry,3).size()==1);
 +}
 diff --git a/version.inc b/version.inc
 index 1160e639..f78cf36d 100644
